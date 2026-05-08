@@ -823,61 +823,115 @@ server <- function(input, output, session){
     input$CutMethod
   })
   ## set reactiveValues
-  exp.ds<-reactiveValues(data=NULL)
+  exp.ds<-reactiveValues(data=NULL, table=NULL, table2=NULL, param=list(), filter_success=FALSE)
   downloads <- reactiveValues(data = NULL)
+
+  resetFilterState <- function() {
+    exp.ds$table <- NULL
+    exp.ds$table2 <- NULL
+    exp.ds$param <- list()
+    exp.ds$filter_success <- FALSE
+  }
+
+  filterErrorMessage <- function(error_message) {
+    HTML(paste0(
+      '<font color = red><b>数据清洗失败：请确认第一列为 gene_id，后续列均为数值表达量。</b></font><br/>',
+      '<font color = blue><b>底层错误摘要：</b></font> ',
+      htmltools::htmlEscape(error_message)
+    ))
+  }
   observeEvent(
     input$action1,
     {
+      resetFilterState()
       if(is.null(data())){return()}
-      if(ncol(data()) < 2) {return()}
-      if(length(which(is.na(data()))) != 0) {return()}
-      exp.ds$table = data.frame()
-      exp.ds$table2 = data.frame()
-      exp.ds$param = list()
+      if(ncol(data()) < 2) {
+        output$filter1 = renderUI({
+          filterErrorMessage("The uploaded matrix has fewer than 2 columns; check the delimiter and include gene_id plus expression columns.")
+        })
+        return()
+      }
+      if(length(which(is.na(data()))) != 0) {
+        output$filter1 = renderUI({
+          filterErrorMessage("Blank or NA values were detected in the uploaded matrix.")
+        })
+        return()
+      }
       exp.ds$layout = as.character(input$treelayout)
 
       output$filter1 = renderUI({
         input$action1
         p_mass = c("Processing step1, remove very low expressed genes",
                    paste("Processing step2, pick out high variation genes via",cutmethod()))
-        withProgress(
-          message = "Raw data normlization",
-          value = 0,{
-            incProgress(1/2,detail = p_mass[1])
-            exp.ds$table = getdatExpr(rawdata = data(),
-                                      RcCutoff = rccutoff(),samplePerc = sampP(),
-                                      datatype = fmt(),method = mtd())
-            Sys.sleep(0.1)
-            if(is.null(exp.ds$table) || nrow(exp.ds$table) == 0 || ncol(exp.ds$table) == 0) {
-              exp.ds$table2 = data.frame()
-              return(HTML(paste0('<font color = blue><b>No genes remain after the first filter.</b></font><br/>',
-                                 'For FPKM/TPM input, please use a smaller Expression Cutoff (default 1) or lower the Sample percentage.')))
-            }
-            reserved_gene_num <- min(GNC(), nrow(exp.ds$table))
-            gene_num_cut <- 1 - reserved_gene_num/nrow(exp.ds$table)
-            incProgress(1/2,detail = p_mass[2])
-            exp.ds$table2 = getdatExpr2(datExpr = exp.ds$table,
-                                        GeneNumCut = gene_num_cut,cutmethod = cutmethod())
-            if(is.null(exp.ds$table2) || nrow(exp.ds$table2) == 0 || ncol(exp.ds$table2) == 0) {
-              return(HTML('<font color = blue><b>No genes remain after the second filter.</b></font> Please reduce the Reserved genes Num. or adjust the filter settings.'))
-            }
-            exp.ds$param = getsampleTree(exp.ds$table2,layout = exp.ds$layout)
-            Sys.sleep(0.1)
+        filter_result <- tryCatch(
+          {
+            withProgress(
+              message = "Raw data normlization",
+              value = 0,{
+                incProgress(1/2,detail = p_mass[1])
+                filtered_table = getdatExpr(rawdata = data(),
+                                            RcCutoff = rccutoff(),samplePerc = sampP(),
+                                            datatype = fmt(),method = mtd())
+                Sys.sleep(0.1)
+                if(is.null(filtered_table) || nrow(filtered_table) == 0 || ncol(filtered_table) == 0) {
+                  stop("No genes remain after the first filter. For FPKM/TPM input, use a smaller Expression Cutoff or lower the Sample percentage.", call. = FALSE)
+                }
+                reserved_gene_num <- min(GNC(), nrow(filtered_table))
+                gene_num_cut <- 1 - reserved_gene_num/nrow(filtered_table)
+                incProgress(1/2,detail = p_mass[2])
+                filtered_table2 = getdatExpr2(datExpr = filtered_table,
+                                              GeneNumCut = gene_num_cut,cutmethod = cutmethod())
+                if(is.null(filtered_table2) || nrow(filtered_table2) == 0 || ncol(filtered_table2) == 0) {
+                  stop("No genes remain after the second filter. Reduce the Reserved genes Num. or adjust the filter settings.", call. = FALSE)
+                }
+                filtered_param = getsampleTree(filtered_table2,layout = exp.ds$layout)
+                Sys.sleep(0.1)
+                list(
+                  table = filtered_table,
+                  table2 = filtered_table2,
+                  param = filtered_param,
+                  reserved_gene_num = reserved_gene_num
+                )
+              }
+            )
+          },
+          error = function(e) {
+            resetFilterState()
+            list(error = conditionMessage(e))
           }
         )
+        if(!is.null(filter_result$error)) {
+          return(filterErrorMessage(filter_result$error))
+        }
+
+        exp.ds$table = filter_result$table
+        exp.ds$table2 = filter_result$table2
+        exp.ds$param = filter_result$param
+        exp.ds$filter_success = TRUE
+
         isolate(HTML(paste0('<font color = red> <b>After filtered by conditions:</b> </font>removing all features with expression/count less than <font color = red><b>',rccutoff(),'</b></font> in more than <font color = red> <b>',100*sampP(),'% </b></font> of the samples','<br/>',
                             '<font color = red> <b>Remaining Gene Numbers: </b> </font>',nrow(exp.ds$table),'<br/>',
-                            '<font color = red> <b>After filtered by conditions:</b> </font>Genes with <font color = red><b>',cutmethod(),'</b></font> ranked top <font color = red> <b>',min(GNC(), nrow(exp.ds$table)),' </b></font> of all expressed genes','<br/>',
+                            '<font color = red> <b>After filtered by conditions:</b> </font>Genes with <font color = red><b>',cutmethod(),'</b></font> ranked top <font color = red> <b>',filter_result$reserved_gene_num,' </b></font> of all expressed genes','<br/>',
                             '<font color = red> <b>Remaining Gene Numbers: </b> </font>',ncol(exp.ds$table2))))
       })
     }
   )
 
 
+  hasNonEmptyDimensions <- function(input_data) {
+    !is.null(input_data) && length(dim(input_data)) == 2 && all(dim(input_data) > 0)
+  }
+
+  filterSucceeded <- reactive({
+    isTRUE(exp.ds$filter_success) &&
+      hasNonEmptyDimensions(exp.ds$table) &&
+      hasNonEmptyDimensions(exp.ds$table2) &&
+      !is.null(exp.ds$param$sampleTree)
+  })
+
   ## summary num
   firstFilterGeneIds <- reactive({
-    if(is.null(exp.ds$table)){return(character(0))}
-    if(is.null(exp.ds$table2)){return(character(0))}
+    if(!filterSucceeded()){return(character(0))}
     table_rows <- rownames(exp.ds$table)
     table_cols <- colnames(exp.ds$table)
     if(!is.null(table_rows) && length(intersect(table_rows, colnames(exp.ds$table2))) > 0) {
@@ -887,8 +941,7 @@ server <- function(input, output, session){
   })
 
   cleanedGeneIds <- reactive({
-    if(is.null(exp.ds$table)){return(character(0))}
-    if(is.null(exp.ds$table2)){return(character(0))}
+    if(!filterSucceeded()){return(character(0))}
     setdiff(firstFilterGeneIds(), colnames(exp.ds$table2))
   })
 
@@ -911,10 +964,6 @@ server <- function(input, output, session){
       exp.ds$table[, gene_ids, drop = FALSE]
     }
   }
-  hasNonEmptyDimensions <- function(input_data) {
-    !is.null(input_data) && length(dim(input_data)) == 2 && all(dim(input_data) > 0)
-  }
-
   inputPreviewSummary <- function(input_data, preview_label) {
     first_column_name <- if(ncol(input_data) > 0) colnames(input_data)[1] else "None"
     first_column_unique <- if(ncol(input_data) > 0) length(unique(input_data[[1]])) else 0
@@ -953,7 +1002,7 @@ server <- function(input, output, session){
       )
     }
 
-    if(hasNonEmptyDimensions(exp.ds$table2)) {
+    if(filterSucceeded()) {
       filtered_preview <- as.data.frame(t(exp.ds$table2))
       filtered_preview <- head(filtered_preview, 10)
       filtered_message <- inputPreviewSummary(
@@ -990,6 +1039,7 @@ server <- function(input, output, session){
   output$washedGenes = DT::renderDataTable({
     if(is.null(data())){return()}
     if(length(which(is.na(data()))) != 0) {return()}
+    if(!filterSucceeded()){return(data.frame(gene_id = character(0)))}
     washed_ids <- cleanedGeneIds()
     if(length(washed_ids) == 0){
       return(data.frame(gene_id = character(0)))
@@ -1006,8 +1056,7 @@ server <- function(input, output, session){
   })
 
   observeEvent(input$addWashedGenes, {
-    if(is.null(exp.ds$table)){return()}
-    if(is.null(exp.ds$table2)){return()}
+    if(!filterSucceeded()){return()}
     selected_rows <- input$washedGenes_rows_selected
     if(length(selected_rows) == 0){
       output$addWashedGenesInfo <- renderUI({
@@ -1040,7 +1089,7 @@ server <- function(input, output, session){
   output$clustPlot = renderPlot({
     if(is.null(data())){return()}
     if(length(which(is.na(data()))) != 0) {return()}
-    if(is.null(exp.ds$table2)){return()}
+    if(!filterSucceeded()){return()}
     plot(exp.ds$param$sampleTree,main = "Sample clustering to detect outlier", sub = "", xlab = "")
   })
   ## download sample tree
