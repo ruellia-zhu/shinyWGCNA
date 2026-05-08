@@ -72,6 +72,98 @@ select =  dplyr::select
 enableWGCNAThreads(nThreads = 20)
 # functions =========================
 
+
+read_expression_matrix <- function(datapath) {
+  if (is.null(datapath) || !file.exists(datapath)) {
+    stop("No expression matrix file was uploaded.", call. = FALSE)
+  }
+
+  raw_head <- readBin(datapath, what = "raw", n = 4096)
+  file_encoding <- ""
+  if (length(raw_head) >= 2 && identical(raw_head[1:2], as.raw(c(0xff, 0xfe)))) {
+    file_encoding <- "UTF-16LE"
+  } else if (length(raw_head) >= 2 && identical(raw_head[1:2], as.raw(c(0xfe, 0xff)))) {
+    file_encoding <- "UTF-16BE"
+  } else if (length(raw_head) >= 3 && identical(raw_head[1:3], as.raw(c(0xef, 0xbb, 0xbf)))) {
+    file_encoding <- "UTF-8-BOM"
+  } else if (length(raw_head) >= 20 && mean(raw_head[seq(2, length(raw_head), by = 2)] == as.raw(0)) > 0.25) {
+    file_encoding <- "UTF-16LE"
+  } else if (length(raw_head) >= 20 && mean(raw_head[seq(1, length(raw_head), by = 2)] == as.raw(0)) > 0.25) {
+    file_encoding <- "UTF-16BE"
+  }
+
+  preview_con <- if (nzchar(file_encoding)) file(datapath, open = "r", encoding = file_encoding) else file(datapath, open = "r")
+  on.exit(close(preview_con), add = TRUE)
+  preview_lines <- readLines(preview_con, n = 20, warn = FALSE)
+  preview_lines <- preview_lines[nzchar(trimws(preview_lines))]
+  if (length(preview_lines) == 0) {
+    stop("The uploaded expression matrix is empty.", call. = FALSE)
+  }
+
+  count_delimiter <- function(x, delimiter) {
+    matches <- gregexpr(delimiter, x, fixed = TRUE)[[1]]
+    if (identical(matches, -1L)) 0L else length(matches)
+  }
+  header_line <- preview_lines[1]
+  delimiter_counts <- c(
+    tab = count_delimiter(header_line, "\t"),
+    comma = count_delimiter(header_line, ","),
+    semicolon = count_delimiter(header_line, ";")
+  )
+  sep <- switch(names(which.max(delimiter_counts)), tab = "\t", comma = ",", semicolon = ";")
+  if (max(delimiter_counts) == 0) {
+    stop("Could not detect a tab, comma, or semicolon delimiter in the expression matrix.", call. = FALSE)
+  }
+
+  expr <- tryCatch(
+    read.table(
+      file = datapath,
+      sep = sep,
+      header = TRUE,
+      stringsAsFactors = FALSE,
+      check.names = FALSE,
+      quote = "\"",
+      comment.char = "",
+      fileEncoding = file_encoding
+    ),
+    error = function(e) {
+      stop(paste("Failed to read the expression matrix:", conditionMessage(e)), call. = FALSE)
+    }
+  )
+
+  names(expr) <- sub("^\\ufeff", "", trimws(names(expr)))
+  expr <- expr[, !vapply(expr, function(x) all(is.na(x) | trimws(as.character(x)) == ""), logical(1)), drop = FALSE]
+  expr <- expr[!apply(expr, 1, function(x) all(is.na(x) | trimws(as.character(x)) == "")), , drop = FALSE]
+
+  if (nrow(expr) == 0 || ncol(expr) < 3) {
+    stop("The expression matrix must contain at least one gene column and two sample expression columns after parsing.", call. = FALSE)
+  }
+
+  for (col in seq.int(2, ncol(expr))) {
+    if (is.character(expr[[col]])) {
+      expr[[col]] <- trimws(expr[[col]])
+      expr[[col]][expr[[col]] == ""] <- NA
+    }
+    expr[[col]] <- suppressWarnings(as.numeric(expr[[col]]))
+  }
+
+  if (all(vapply(expr[-1], function(x) all(is.na(x)), logical(1)))) {
+    stop("No numeric sample expression columns were found. Please check the file delimiter and encoding.", call. = FALSE)
+  }
+
+  attr(expr, "delimiter") <- switch(sep, "\t" = "tab", "," = "comma", ";" = "semicolon")
+  attr(expr, "encoding") <- if (nzchar(file_encoding)) file_encoding else "native/UTF-8"
+  expr
+}
+
+expression_matrix_error_message <- function(err) {
+  HTML(paste0(
+    '<font color = red><b>Expression matrix import failed:</b></font> ',
+    htmltools::htmlEscape(conditionMessage(err)),
+    '<br/><font color = blue>Please upload a tab-delimited text/CSV file exported from Windows or Excel with genes in the first column and numeric samples in the remaining columns.</font>'
+  ))
+}
+
 # 01. UI =========================
 ## logo
 customLogo <- shinyDashboardLogoDIY(
@@ -637,18 +729,20 @@ server <- function(input, output, session){
   data <- reactive({
     file1 <- input$ExpMat
     if(is.null(file1)){return()}
-    read.delim(file = file1$datapath,
-               sep="\t",
-               header = T,
-               stringsAsFactors = F)
+    read_expression_matrix(file1$datapath)
   })
 
   output$Inputcheck = renderUI({
-    if(is.null(data())){return()}
-    if(length(which(is.na(data()))) == 0) {
-      HTML('<font color = red><b>
-          Congratulations!,</b></font> There is no problem with your expression matrix format, please proceed to the next step
-          ')
+    matrix_data <- tryCatch(data(), error = function(e) e)
+    if(is.null(matrix_data)){return()}
+    if(inherits(matrix_data, "error")) {
+      return(expression_matrix_error_message(matrix_data))
+    }
+    if(length(which(is.na(matrix_data))) == 0) {
+      HTML(paste0('<font color = red><b>
+          Congratulations!,</b></font> There is no problem with your expression matrix format, please proceed to the next step',
+          '<br/><font color = blue>Detected delimiter: <b>', attr(matrix_data, "delimiter"),
+          '</b>; detected encoding: <b>', attr(matrix_data, "encoding"), '</b>.</font>'))
     } else {
       HTML(
         '<font color = blue><b>Sorry!</b></font>
@@ -717,8 +811,15 @@ server <- function(input, output, session){
   observeEvent(
     input$action1,
     {
-      if(is.null(data())){return()}
-      if(length(which(is.na(data()))) != 0) {return()}
+      matrix_data <- tryCatch(data(), error = function(e) e)
+      if(is.null(matrix_data)){return()}
+      if(inherits(matrix_data, "error")) {
+        output$filter1 = renderUI({
+          expression_matrix_error_message(matrix_data)
+        })
+        return()
+      }
+      if(length(which(is.na(matrix_data))) != 0) {return()}
       exp.ds$table = data.frame()
       exp.ds$table2 = data.frame()
       exp.ds$param = list()
@@ -728,25 +829,35 @@ server <- function(input, output, session){
         input$action1
         p_mass = c("Processing step1, remove very low expressed genes",
                    paste("Processing step2, pick out high variation genes via",cutmethod()))
-        withProgress(
-          message = "Raw data normlization",
-          value = 0,{
-            for (i in 1:2) {
-             incProgress(1/2,detail = p_mass[i])
-            # 放一个彩蛋 incProgress(1/2,detail = c("找不到对象，找不到对象，找不到「对象」汪汪！>_< ~~","终于找到了 o_O ~~")[i])
-              if(i == 1) {
-                exp.ds$table = getdatExpr(rawdata = data(),
-                                          RcCutoff = rccutoff(),samplePerc = sampP(),
-                                          datatype = fmt(),method = mtd())
-              } else if (i == 2){
-                exp.ds$table2 = getdatExpr2(datExpr = exp.ds$table,
-                                            GeneNumCut = 1-GNC()/nrow(exp.ds$table),cutmethod = cutmethod())
-                exp.ds$param = getsampleTree(exp.ds$table2,layout = exp.ds$layout)
+        processing_error <- tryCatch({
+          withProgress(
+            message = "Raw data normlization",
+            value = 0,{
+              for (i in 1:2) {
+               incProgress(1/2,detail = p_mass[i])
+              # 放一个彩蛋 incProgress(1/2,detail = c("找不到对象，找不到对象，找不到「对象」汪汪！>_< ~~","终于找到了 o_O ~~")[i])
+                if(i == 1) {
+                  exp.ds$table = getdatExpr(rawdata = matrix_data,
+                                            RcCutoff = rccutoff(),samplePerc = sampP(),
+                                            datatype = fmt(),method = mtd())
+                } else if (i == 2){
+                  exp.ds$table2 = getdatExpr2(datExpr = exp.ds$table,
+                                              GeneNumCut = 1-GNC()/nrow(exp.ds$table),cutmethod = cutmethod())
+                  exp.ds$param = getsampleTree(exp.ds$table2,layout = exp.ds$layout)
+                }
+                Sys.sleep(0.1)
               }
-              Sys.sleep(0.1)
             }
-          }
-        )
+          )
+          NULL
+        }, error = function(e) e)
+        if(inherits(processing_error, "error")) {
+          return(HTML(paste0(
+            '<font color = red><b>Expression matrix processing failed:</b></font> ',
+            htmltools::htmlEscape(conditionMessage(processing_error)),
+            '<br/><font color = blue>Please confirm that the uploaded file was parsed into one gene ID column followed by at least two numeric sample columns.</font>'
+          )))
+        }
         isolate(HTML(paste0('<font color = red> <b>After filtered by conditions:</b> </font>removing all features that have a count of less than say <font color = red><b>',rccutoff(),'</b></font> in more than <font color = red> <b>',100*sampP(),'% </b></font> of the samples','<br/>',
                             '<font color = red> <b>Remaining Gene Numbers: </b> </font>',nrow(exp.ds$table),'<br/>',
                             '<font color = red> <b>After filtered by conditions:</b> </font>Genes with <font color = red><b>',cutmethod(),'</b></font> ranked top <font color = red> <b>',GNC(),' </b></font> of all expressed genes','<br/>',
@@ -758,14 +869,16 @@ server <- function(input, output, session){
 
   ## summary num
   output$Inputbl = DT::renderDataTable({
-    if(is.null(data())){return()}
-    if(length(which(is.na(data()))) != 0) {return()}
+    matrix_data <- tryCatch(data(), error = function(e) e)
+    if(is.null(matrix_data) || inherits(matrix_data, "error")){return()}
+    if(length(which(is.na(matrix_data))) != 0) {return()}
     as.data.frame(t(exp.ds$table2))
   })
   ## sample tree
   output$clustPlot = renderPlot({
-    if(is.null(data())){return()}
-    if(length(which(is.na(data()))) != 0) {return()}
+    matrix_data <- tryCatch(data(), error = function(e) e)
+    if(is.null(matrix_data) || inherits(matrix_data, "error")){return()}
+    if(length(which(is.na(matrix_data))) != 0) {return()}
     if(is.null(exp.ds$table2)){return()}
     plot(exp.ds$param$sampleTree,main = "Sample clustering to detect outlier", sub = "", xlab = "")
   })
