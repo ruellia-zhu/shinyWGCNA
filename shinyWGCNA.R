@@ -874,24 +874,25 @@ server <- function(input, output, session){
               return(HTML(paste0('<font color = blue><b>No genes remain after the first filter.</b></font><br/>',
                                  'For FPKM/TPM input, please use a smaller Expression Cutoff (default 1) or lower the Sample percentage.')))
             }
-            first_filter_gene_num <- ncol(exp.ds$table)
-            reserved_gene_num <- min(GNC(), first_filter_gene_num)
+            first_filter_gene_count <- ncol(exp.ds$table)
+            reserved_gene_num <- min(GNC(), first_filter_gene_count)
             # exp.ds$table is passed to WGCNA as samples x genes; GeneNumCut is the proportion of gene columns to remove.
-            gene_num_cut <- 1 - reserved_gene_num/first_filter_gene_num
+            gene_num_cut <- 1 - reserved_gene_num/first_filter_gene_count
             incProgress(1/2,detail = p_mass[2])
             exp.ds$table2 = getdatExpr2(datExpr = exp.ds$table,
                                         GeneNumCut = gene_num_cut,cutmethod = cutmethod())
             if(is.null(exp.ds$table2) || nrow(exp.ds$table2) == 0 || ncol(exp.ds$table2) == 0) {
               return(HTML('<font color = blue><b>No genes remain after the second filter.</b></font> Please reduce the Reserved genes Num. or adjust the filter settings.'))
             }
+            second_filter_gene_count <- ncol(exp.ds$table2)
             exp.ds$param = getsampleTree(exp.ds$table2,layout = exp.ds$layout)
             Sys.sleep(0.1)
           }
         )
         isolate(HTML(paste0('<font color = red> <b>After filtered by conditions:</b> </font>removing all features with expression/count less than <font color = red><b>',rccutoff(),'</b></font> in more than <font color = red> <b>',100*sampP(),'% </b></font> of the samples','<br/>',
-                            '<font color = red> <b>Remaining Gene Numbers: </b> </font>',ncol(exp.ds$table),'<br/>',
-                            '<font color = red> <b>After filtered by conditions:</b> </font>Genes with <font color = red><b>',cutmethod(),'</b></font> ranked top <font color = red> <b>',min(GNC(), ncol(exp.ds$table)),' </b></font> of all expressed genes','<br/>',
-                            '<font color = red> <b>Remaining Gene Numbers: </b> </font>',ncol(exp.ds$table2))))
+                            '<font color = red> <b>Remaining Gene Numbers: </b> </font>',first_filter_gene_count,'<br/>',
+                            '<font color = red> <b>After filtered by conditions:</b> </font>Genes with <font color = red><b>',cutmethod(),'</b></font> ranked top <font color = red> <b>',min(GNC(), first_filter_gene_count),' </b></font> of all expressed genes','<br/>',
+                            '<font color = red> <b>Remaining Gene Numbers: </b> </font>',second_filter_gene_count))))
       })
     }
   )
