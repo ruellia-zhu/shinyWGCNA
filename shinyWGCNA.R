@@ -677,18 +677,41 @@ readExpressionMatrix <- function(upload) {
         table[[1]] <- stripUtf8BomAndWhitespace(as.character(table[[1]]))
       }
 
-      if(ncol(table) > 0) {
-        names(table)[1] <- "gene_id"
-        table[[1]] <- stripUtf8BomAndWhitespace(as.character(table[[1]]))
-      }
+      first_column_is_gene_id <- ncol(table) > 1 &&
+        (is.character(table[[1]]) || is.factor(table[[1]]))
 
-      if(ncol(table) > 1) {
-        for(column_name in names(table)[-1]) {
-          original_column <- table[[column_name]]
-          converted_column <- suppressWarnings(as.numeric(as.character(original_column)))
-          table[[column_name]] <- converted_column
+      if(first_column_is_gene_id) {
+        gene_ids <- table[[1]]
+        if(any(is.na(gene_ids) | !nzchar(gene_ids))) {
+          stop(paste(
+            "Gene ID column contains empty or missing gene IDs.",
+            expression_format_message
+          ), call. = FALSE)
+        }
+        duplicated_gene_ids <- unique(gene_ids[duplicated(gene_ids)])
+        if(length(duplicated_gene_ids) > 0) {
+          stop(paste(
+            "Gene ID column contains duplicate gene IDs:",
+            paste(utils::head(duplicated_gene_ids, 5), collapse = ", "),
+            "Please make gene IDs unique before uploading.",
+            expression_format_message
+          ), call. = FALSE)
         }
       }
+
+      expression_column_names <- names(table)[-1]
+      for(column_name in expression_column_names) {
+        original_column <- table[[column_name]]
+        converted_column <- suppressWarnings(as.numeric(as.character(original_column)))
+        if(any(is.na(converted_column) & !is.na(original_column))) {
+          stop(paste(
+            "Expression column", shQuote(column_name),
+            "contains non-numeric expression values. Please check the non-numeric expression values and upload again.",
+            expression_format_message
+          ), call. = FALSE)
+        }
+      }
+      rownames(table) <- NULL
       return(table)
     }
   }
@@ -1052,8 +1075,16 @@ server <- function(input, output, session){
   ## sample tree
   output$clustPlot = renderPlot({
     if(is.null(data())){return()}
-    if(!inputMatrixValidation(data())$valid) {return()}
-    if(is.null(exp.ds$table2)){return()}
+    if(length(which(is.na(data()))) != 0) {return()}
+    validate(
+      need(!is.null(exp.ds$table2) &&
+             length(dim(exp.ds$table2)) == 2 &&
+             nrow(exp.ds$table2) > 0 &&
+             ncol(exp.ds$table2) > 0,
+           "请先成功完成 Update information / filtering"),
+      need(!is.null(exp.ds$param$sampleTree),
+           "请先成功完成 Update information / filtering")
+    )
     plot(exp.ds$param$sampleTree,main = "Sample clustering to detect outlier", sub = "", xlab = "")
   })
   ## download sample tree
@@ -1536,6 +1567,10 @@ server <- function(input, output, session){
       "01.SampleCluster.nwk"
     },
     content = function(file) {
+      validate(
+        need(!is.null(exp.ds$param$tree),
+             "请先成功完成 Update information / filtering")
+      )
       write.tree(phy = exp.ds$param$tree,file = file)
     }
   )
