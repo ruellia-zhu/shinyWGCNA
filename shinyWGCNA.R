@@ -511,6 +511,15 @@ ui <- shinyUI(
                                 icon = icon("table"),
                                 DT::dataTableOutput("Inputbl"),
                        ),
+                       tabPanel(title = "Filtered genes",height = "500px",width = "100%",
+                                icon = icon("filter"),
+                                p("These genes passed the first expression filter but were excluded during the second MAD/Var ranking filter and did not enter the final analysis matrix.",
+                                  style = "color: #7a8788;font-size: 12px; font-style:Italic"),
+                                actionButton("restoreRemovedGenes", "Restore selected genes"),
+                                br(),
+                                br(),
+                                DT::dataTableOutput("RemovedGenePreview"),
+                       ),
                        tabPanel(title = "SampleCluster",height = "500px",width = "100%",
                                 icon = icon("tree"),
                                 jqui_resizable(
@@ -1018,8 +1027,22 @@ server <- function(input, output, session){
     input$CutMethod
   })
   ## set reactiveValues
-  exp.ds<-reactiveValues(data=NULL)
+  exp.ds<-reactiveValues(data=NULL,
+                         table2_base=NULL,
+                         removedGenes=NULL,
+                         restoredGenes=character(0),
+                         restoreMessage=NULL)
   downloads <- reactiveValues(data = NULL)
+  filter_summary_html <- function() {
+    HTML(paste0('<font color = red> <b>After filtered by conditions:</b> </font>removing all features that have a count of less than say <font color = red><b>',rccutoff(),'</b></font> in more than <font color = red> <b>',100*sampP(),'% </b></font> of the samples','<br/>',
+                '<font color = red> <b>Remaining Gene Numbers: </b> </font>',nrow(exp.ds$table),'<br/>',
+                '<font color = red> <b>After filtered by conditions:</b> </font>Genes with <font color = red><b>',cutmethod(),'</b></font> ranked top <font color = red> <b>',exp.ds$GNC,' </b></font> of all expressed genes','<br/>',
+                '<font color = red> <b>Reserved genes Num.: </b> </font>',exp.ds$GNC,'<br/>',
+                '<font color = red> <b>Restored filtered genes: </b> </font>',length(exp.ds$restoredGenes),'<br/>',
+                '<font color = red> <b>Final analysis gene count: </b> </font>',ncol(exp.ds$table2),'<br/>',
+                if (!is.null(exp.ds$restoreMessage) && nzchar(exp.ds$restoreMessage)) paste0('<font color = red> <b>Restore notice: </b> </font>',htmltools::htmlEscape(exp.ds$restoreMessage),'<br/>') else '',
+                '<font color = red> <b>Notice: </b> </font>',exp.ds$gnccheck))
+  }
   
   observeEvent(
     input$action1,
@@ -1035,6 +1058,10 @@ server <- function(input, output, session){
       if(length(which(is.na(matrix_data))) != 0) {return()}
       exp.ds$table = data.frame()
       exp.ds$table2 = data.frame()
+      exp.ds$table2_base = data.frame()
+      exp.ds$removedGenes = data.frame()
+      exp.ds$restoredGenes = character(0)
+      exp.ds$restoreMessage = NULL
       exp.ds$param = list()
       exp.ds$layout = as.character(input$treelayout)
       exp.ds$GNC = NULL
@@ -1073,6 +1100,12 @@ server <- function(input, output, session){
                   gene_num_cut <- max(min(gene_num_cut, 0.999999), 0)
                   exp.ds$table2 = getdatExpr2(datExpr = exp.ds$table,
                                               GeneNumCut = gene_num_cut, cutmethod = cutmethod())
+                  exp.ds$table2_base <- exp.ds$table2
+                  retained_genes <- colnames(exp.ds$table2_base)
+                  candidate_removed <- setdiff(rownames(exp.ds$table), retained_genes)
+                  exp.ds$removedGenes <- exp.ds$table[candidate_removed, , drop = FALSE]
+                  exp.ds$restoredGenes <- character(0)
+                  exp.ds$restoreMessage <- NULL
                   if (is.null(exp.ds$table2) || nrow(exp.ds$table2) < 2 || ncol(exp.ds$table2) < 2) {
                     stop("The cleaned expression matrix has fewer than 2 samples or fewer than 2 genes. Please check filtering parameters.", call. = FALSE)
                   }
@@ -1091,11 +1124,7 @@ server <- function(input, output, session){
             '<br/><font color = blue>Please confirm that the uploaded file was parsed into one gene ID column followed by at least two numeric sample columns.</font>'
           )))
         }
-        isolate(HTML(paste0('<font color = red> <b>After filtered by conditions:</b> </font>removing all features that have a count of less than say <font color = red><b>',rccutoff(),'</b></font> in more than <font color = red> <b>',100*sampP(),'% </b></font> of the samples','<br/>',
-                            '<font color = red> <b>Remaining Gene Numbers: </b> </font>',nrow(exp.ds$table),'<br/>',
-                            '<font color = red> <b>After filtered by conditions:</b> </font>Genes with <font color = red><b>',cutmethod(),'</b></font> ranked top <font color = red> <b>',exp.ds$GNC,' </b></font> of all expressed genes','<br/>',
-                            '<font color = red> <b>Remaining Gene Numbers: </b> </font>',ncol(exp.ds$table2),'<br/>',
-                            '<font color = red> <b>Notice: </b> </font>',exp.ds$gnccheck)))
+        isolate(filter_summary_html())
       })
     }
   )
@@ -1107,6 +1136,74 @@ server <- function(input, output, session){
     if(is.null(matrix_data) || inherits(matrix_data, "error")){return()}
     if(length(which(is.na(matrix_data))) != 0) {return()}
     as.data.frame(t(exp.ds$table2))
+  })
+  output$RemovedGenePreview = DT::renderDataTable({
+    if (is.null(exp.ds$removedGenes) || nrow(exp.ds$removedGenes) == 0) {
+      return(DT::datatable(
+        data.frame(Message = "No genes were removed by the second MAD/Var ranking filter."),
+        rownames = FALSE,
+        selection = "none",
+        options = list(pageLength = 25, searchHighlight = TRUE, scrollX = TRUE)
+      ))
+    }
+    removed_df <- cbind(Gene = rownames(exp.ds$removedGenes), as.data.frame(exp.ds$removedGenes))
+    DT::datatable(
+      removed_df,
+      rownames = FALSE,
+      selection = "multiple",
+      filter = "top",
+      options = list(pageLength = 25, searchHighlight = TRUE, scrollX = TRUE)
+    )
+  })
+  observeEvent(input$restoreRemovedGenes, {
+    if (is.null(exp.ds$table2_base) || is.null(exp.ds$removedGenes) || nrow(exp.ds$removedGenes) == 0) {
+      exp.ds$restoreMessage <- "No filtered genes are available to restore. Run data import filtering first."
+      showNotification(exp.ds$restoreMessage, type = "warning")
+      return()
+    }
+    selected_rows <- input$RemovedGenePreview_rows_selected
+    if (is.null(selected_rows) || length(selected_rows) == 0) {
+      exp.ds$restoreMessage <- "No filtered genes were selected for restoration."
+      showNotification(exp.ds$restoreMessage, type = "warning")
+      return()
+    }
+    selected_genes <- rownames(exp.ds$removedGenes)[selected_rows]
+    selected_genes <- unique(selected_genes[!is.na(selected_genes)])
+    selected_genes <- setdiff(selected_genes, colnames(exp.ds$table2_base))
+    if (length(selected_genes) == 0) {
+      exp.ds$table2 <- exp.ds$table2_base
+      exp.ds$restoredGenes <- character(0)
+      exp.ds$param = getsampleTree(exp.ds$table2, layout = exp.ds$layout)
+      exp.ds$restoreMessage <- paste0(
+        "No new genes were restored; final analysis gene count is ",
+        ncol(exp.ds$table2), "."
+      )
+      showNotification(exp.ds$restoreMessage, type = "message")
+      output$filter1 = renderUI({
+        filter_summary_html()
+      })
+      return()
+    }
+    restored_expr <- t(exp.ds$removedGenes[selected_genes, , drop = FALSE])
+    restored_expr <- restored_expr[rownames(exp.ds$table2_base), , drop = FALSE]
+    exp.ds$table2 <- cbind(exp.ds$table2_base, restored_expr)
+    exp.ds$restoredGenes <- selected_genes
+    exp.ds$param = getsampleTree(exp.ds$table2, layout = exp.ds$layout)
+    rerun_notice <- if ((!is.null(exp.ds$sft) && length(exp.ds$sft) > 0) || !is.null(exp.ds$net)) {
+      " Please rerun SFT, network construction, trait, hub gene, and Cytoscape steps so downstream results use the restored genes."
+    } else {
+      ""
+    }
+    exp.ds$restoreMessage <- paste0(
+      "Restored ", length(selected_genes),
+      " filtered genes; final analysis gene count is ",
+      ncol(exp.ds$table2), ".",
+      rerun_notice
+    )
+    showNotification(exp.ds$restoreMessage, type = "message", duration = 10)
+    output$filter1 = renderUI({
+      filter_summary_html()
+    })
   })
   ## sample tree
   output$clustPlot = renderPlot({
