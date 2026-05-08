@@ -824,12 +824,34 @@ server <- function(input, output, session){
   ## set reactiveValues
   exp.ds<-reactiveValues(data=NULL)
   downloads <- reactiveValues(data = NULL)
+
+  clearDownstreamAnalysisState <- function(exp.ds) {
+    downstream_names <- c(
+      "sft", "cksft", "power", "netout", "net", "moduleLabels",
+      "moduleColors", "MEs_col", "MEs", "Gene2module", "nSamples",
+      "tomDiss", "tomGeneTree", "phen", "traitout", "modTraitCor",
+      "modTraitP", "textMatrix", "KME", "GSout", "MM", "MMP",
+      "Heatmap", "hub.all", "cyt", "sml", "st", "hubml", "hubt",
+      "kMEcut", "GScut", "threshold", "xangle", "c_min", "c_mid",
+      "c_max", "mod_color", "mod_color_anno", "Left_anno"
+    )
+    for(downstream_name in downstream_names) {
+      exp.ds[[downstream_name]] <- NULL
+    }
+    invisible(exp.ds)
+  }
+
+  hasDownstreamValue <- function(value) {
+    !is.null(value) && length(value) > 0
+  }
+
   observeEvent(
     input$action1,
     {
       if(is.null(data())){return()}
       if(ncol(data()) < 2) {return()}
       if(length(which(is.na(data()))) != 0) {return()}
+      clearDownstreamAnalysisState(exp.ds)
       exp.ds$table = data.frame()
       exp.ds$table2 = data.frame()
       exp.ds$param = list()
@@ -1026,11 +1048,7 @@ server <- function(input, output, session){
     }
     exp.ds$table2 <- cbind(exp.ds$table2, cleanedGenesForInput(selected_genes))
     exp.ds$param <- getsampleTree(exp.ds$table2, layout = exp.ds$layout)
-    exp.ds$sft <- NULL
-    exp.ds$power <- NULL
-    exp.ds$net <- NULL
-    exp.ds$tomDiss <- NULL
-    exp.ds$tomGeneTree <- NULL
+    clearDownstreamAnalysisState(exp.ds)
     output$addWashedGenesInfo <- renderUI({
       HTML(paste0('<font color = red><b>', length(selected_genes), '</b></font> cleaned genes were added back to Input. Please rerun downstream WGCNA analyses.'))
     })
@@ -1230,6 +1248,10 @@ server <- function(input, output, session){
     input$starttrait,
     {
       if(is.null(phen())){return()}
+      if(is.null(exp.ds$table2)){return()}
+      if(is.null(exp.ds$MEs_col)){return()}
+      if(is.null(exp.ds$nSamples)){return()}
+      if(is.null(exp.ds$moduleColors)){return()}
       if (ncol(phen()) == 2) {
         x <- phen()
         Tcol = as.character(unique(x[,2]))
@@ -1276,6 +1298,9 @@ server <- function(input, output, session){
       input$starttrait
       if(is.null(phen())){return()}
       if(is.null(exp.ds$phen)){return()}
+      if(is.null(exp.ds$modTraitCor)){return()}
+      if(is.null(exp.ds$textMatrix)){return()}
+      if(is.null(exp.ds$Left_anno)){return()}
       Heatmap(
         matrix = exp.ds$modTraitCor,
         cluster_rows = F, cluster_columns = F,
@@ -1306,6 +1331,7 @@ server <- function(input, output, session){
     input$starttrait
     if(is.null(phen())){return()}
     if(is.null(exp.ds$phen)){return()}
+    if(is.null(exp.ds$modTraitCor)){return()}
     as.data.frame(exp.ds$modTraitCor)
   })
 
@@ -1313,6 +1339,7 @@ server <- function(input, output, session){
     input$starttrait
     if(is.null(phen())){return()}
     if(is.null(exp.ds$phen)){return()}
+    if(is.null(exp.ds$modTraitP)){return()}
     as.data.frame(exp.ds$modTraitP)
   })
 
@@ -1320,6 +1347,7 @@ server <- function(input, output, session){
     input$starttrait
     if(is.null(phen())){return()}
     if(is.null(exp.ds$phen)){return()}
+    if(is.null(exp.ds$KME)){return()}
     as.data.frame(exp.ds$KME)
   })
   s_mod = reactive({
@@ -1341,6 +1369,10 @@ server <- function(input, output, session){
     {
       if(is.null(phen())){return()}
       if(is.null(exp.ds$phen)){return()}
+      if(is.null(exp.ds$table2)){return()}
+      if(is.null(exp.ds$MEs_col)){return()}
+      if(is.null(exp.ds$nSamples)){return()}
+      if(is.null(exp.ds$moduleColors)){return()}
       exp.ds$GSout = getMM(datExpr = exp.ds$table2,MEs_col = exp.ds$MEs_col,nSamples = exp.ds$nSamples,corType = "pearson")
       exp.ds$MM = exp.ds$GSout$MM
       exp.ds$MMP = exp.ds$GSout$MMP
@@ -1356,6 +1388,11 @@ server <- function(input, output, session){
     input$InterMode
     if(is.null(exp.ds$st)){return()}
     if(is.null(exp.ds$sml)){return()}
+    if(is.null(exp.ds$phen)){return()}
+    if(is.null(exp.ds$MEs_col)){return()}
+    if(is.null(exp.ds$moduleColors)){return()}
+    if(is.null(exp.ds$MM)){return()}
+    if(is.null(exp.ds$nSamples)){return()}
     getverboseplot(datExpr = exp.ds$table2,module = exp.ds$sml,pheno = exp.ds$st,MEs = exp.ds$MEs_col,
                    traitData = exp.ds$phen,moduleColors = exp.ds$moduleColors,
                    geneModuleMembership = exp.ds$MM,nSamples = exp.ds$nSamples)
@@ -1365,6 +1402,7 @@ server <- function(input, output, session){
     input$InterMode
     if(is.null(exp.ds$st)){return()}
     if(is.null(exp.ds$sml)){return()}
+    if(is.null(exp.ds$Heatmap)){return()}
     exp.ds$Heatmap
   })
 
@@ -1372,6 +1410,11 @@ server <- function(input, output, session){
     input$InterMode
     if(is.null(exp.ds$st)){return()}
     if(is.null(exp.ds$sml)){return()}
+    if(is.null(exp.ds$phen)){return()}
+    if(is.null(exp.ds$moduleColors)){return()}
+    if(is.null(exp.ds$MM)){return()}
+    if(is.null(exp.ds$MEs_col)){return()}
+    if(is.null(exp.ds$nSamples)){return()}
     MMvsGSall(which.trait = exp.ds$st,
               traitData = exp.ds$phen,
               datExpr = exp.ds$table2,
@@ -1392,6 +1435,11 @@ server <- function(input, output, session){
   observeEvent(
     input$starthub,
     {
+      if(is.null(exp.ds$table2)){return()}
+      if(is.null(exp.ds$power)){return()}
+      if(is.null(exp.ds$KME)){return()}
+      if(is.null(exp.ds$phen)){return()}
+      if(is.null(exp.ds$Gene2module)){return()}
       exp.ds$hubml = as.character(input$hubmodule)
       exp.ds$hubt = as.character(input$hubtrait)
       exp.ds$kMEcut = as.numeric(input$kMEcut)
@@ -1413,6 +1461,10 @@ server <- function(input, output, session){
   observeEvent(
     input$threadd,
     {
+      if(is.null(exp.ds$table2)){return()}
+      if(is.null(exp.ds$power)){return()}
+      if(is.null(exp.ds$hubml)){return()}
+      if(is.null(exp.ds$moduleColors)){return()}
       exp.ds$threshold = as.numeric(input$threshold)
       exp.ds$cyt = cytoscapeout(datExpr = exp.ds$table2,
                                 power = exp.ds$power,module = exp.ds$hubml,
@@ -1425,6 +1477,7 @@ server <- function(input, output, session){
     input$starthub
     if(is.null(exp.ds$hubml)){return()}
     if(is.null(exp.ds$hubt)){return()}
+    if(is.null(exp.ds$hub.all)){return()}
     exp.ds$hub.all$hub1
   })
 
@@ -1434,6 +1487,7 @@ server <- function(input, output, session){
     if(is.null(exp.ds$hubt)){return()}
     if(is.null(exp.ds$kMEcut)){return()}
     if(is.null(exp.ds$GScut)){return()}
+    if(is.null(exp.ds$hub.all)){return()}
     exp.ds$hub.all$hub3
   })
 
@@ -1441,6 +1495,7 @@ server <- function(input, output, session){
     input$threadd
     if(is.null(exp.ds$hubml)){return()}
     if(is.null(exp.ds$threshold)){return()}
+    if(is.null(exp.ds$cyt)){return()}
     exp.ds$cyt[[1]]
   })
 
@@ -1448,6 +1503,7 @@ server <- function(input, output, session){
     input$threadd
     if(is.null(exp.ds$hubml)){return()}
     if(is.null(exp.ds$threshold)){return()}
+    if(is.null(exp.ds$cyt)){return()}
     exp.ds$cyt[[2]]
   })
 
@@ -1542,6 +1598,8 @@ server <- function(input, output, session){
       "02.SftResult.pdf"
     },
     content = function(file) {
+      validate(need(hasDownstreamValue(exp.ds$sft) && !is.null(exp.ds$sft$plot),
+                    "请先重新完成 soft-threshold analysis"))
       ggsave(plot = exp.ds$sft$plot,filename = file,width = downloads$width2,height = downloads$height2)
     }
   )
@@ -1550,6 +1608,8 @@ server <- function(input, output, session){
       "03.CheckSft.pdf"
     },
     content = function(file) {
+      validate(need(hasDownstreamValue(exp.ds$cksft),
+                    "请先重新完成 scale-free network check"))
       ggsave(plot = exp.ds$cksft,filename = file,width = downloads$width3,height = downloads$height3)
     }
   )
@@ -1558,6 +1618,8 @@ server <- function(input, output, session){
       "04.ClusterDendrogram.pdf"
     },
     content = function(file) {
+      validate(need(!is.null(exp.ds$net) && !is.null(exp.ds$moduleColors),
+                    "请先重新完成 network construction"))
       pdf(file = file,width = downloads$width4, height = downloads$height4 )
       plotDendroAndColors(exp.ds$net$dendrograms[[1]], exp.ds$moduleColors[exp.ds$net$blockGenes[[1]]],
                           "Module colors",
@@ -1571,6 +1633,8 @@ server <- function(input, output, session){
       "05.EigengeneadJacencyHeatmap.pdf"
     },
     content = function(file) {
+      validate(need(!is.null(exp.ds$MEs_col),
+                    "请先重新完成 network construction"))
       pdf(file = file,width = downloads$width5, height = downloads$height5)
       plotEigengeneNetworks(exp.ds$MEs_col, "Eigengene adjacency heatmap",
                             marDendro = c(3,3,2,4),
@@ -1584,6 +1648,8 @@ server <- function(input, output, session){
       "06.TOMplot.pdf"
     },
     content = function(file) {
+      validate(need(!is.null(exp.ds$tomDiss) && !is.null(exp.ds$tomGeneTree) && !is.null(exp.ds$moduleColors),
+                    "请先重新完成 TOMplot analysis"))
       pdf(file = file,width = downloads$width9, height = downloads$height9)
       plotTOM <- exp.ds$tomDiss^7
       TOMplot(plotTOM, exp.ds$tomGeneTree, exp.ds$moduleColors, main = "Network heatmap plot, all genes")
@@ -1595,6 +1661,8 @@ server <- function(input, output, session){
       "06.Module2Trait.pdf"
     },
     content = function(file) {
+      validate(need(!is.null(exp.ds$modTraitCor) && !is.null(exp.ds$textMatrix) && !is.null(exp.ds$Left_anno),
+                    "请先重新完成 module-trait analysis"))
       pdf(file = file,width = downloads$width6, height = downloads$height6)
 
       print(Heatmap(
@@ -1627,6 +1695,10 @@ server <- function(input, output, session){
       paste0("07.GS",exp.ds$sml,"-",exp.ds$st,"-Connectivity.pdf")
     },
     content = function(file) {
+      validate(need(!is.null(exp.ds$table2) && !is.null(exp.ds$sml) && !is.null(exp.ds$st) &&
+                      !is.null(exp.ds$MEs_col) && !is.null(exp.ds$phen) &&
+                      !is.null(exp.ds$moduleColors) && !is.null(exp.ds$MM) && !is.null(exp.ds$nSamples),
+                    "请先重新完成 GS/MM interaction analysis"))
       pdf(file = file,width = downloads$width7, height = downloads$height7)
      print(getverboseplot(datExpr = exp.ds$table2,module = exp.ds$sml,pheno = exp.ds$st,MEs = exp.ds$MEs_col,
                      traitData = exp.ds$phen,moduleColors = exp.ds$moduleColors,
@@ -1640,6 +1712,8 @@ server <- function(input, output, session){
       paste0("08.",exp.ds$sml,"-",exp.ds$st,"MEandGeneHeatmap.pdf")
     },
     content = function(file) {
+      validate(need(!is.null(exp.ds$Heatmap),
+                    "请先重新完成 GS/MM interaction analysis"))
       pdf(file = file,width = downloads$width8, height = downloads$height8)
       print(exp.ds$Heatmap)
       dev.off()
@@ -1651,6 +1725,10 @@ server <- function(input, output, session){
       "09.GSvsMM.all.pdf"
     },
     content = function(file) {
+      validate(need(!is.null(exp.ds$st) && !is.null(exp.ds$phen) && !is.null(exp.ds$nSamples) &&
+                      !is.null(exp.ds$table2) && !is.null(exp.ds$moduleColors) &&
+                      !is.null(exp.ds$MM) && !is.null(exp.ds$MEs_col),
+                    "请先重新完成 GS/MM interaction analysis"))
       pdf(file = file,width = downloads$width10, height = downloads$height10)
       print(MMvsGSall(which.trait = exp.ds$st,
                 traitData = exp.ds$phen,nSamples = exp.ds$nSamples,
@@ -1667,6 +1745,8 @@ server <- function(input, output, session){
       "01.Gene2Module.xls"
     },
     content = function(file) {
+      validate(need(!is.null(exp.ds$Gene2module),
+                    "请先重新完成 network construction"))
       write.table(x = exp.ds$Gene2module,file = file,sep = "\t",row.names = F,quote = F)
     }
   )
@@ -1675,6 +1755,8 @@ server <- function(input, output, session){
       "02.KMEofAllGenes.xls"
     },
     content = function(file) {
+      validate(need(!is.null(exp.ds$KME),
+                    "请先重新完成 module-trait analysis"))
       write.table(x = exp.ds$KME,file = file,sep = "\t",row.names = T,quote = F)
     }
   )
@@ -1683,6 +1765,8 @@ server <- function(input, output, session){
       paste0("03.",exp.ds$hubml,"-",exp.ds$hubt,"hubgene_by_GS_MM.xls")
     },
     content = function(file) {
+      validate(need(!is.null(exp.ds$hub.all) && !is.null(exp.ds$hub.all$hub3),
+                    "请先重新完成 hub gene analysis"))
       write.table(x = exp.ds$hub.all$hub3,file = file,sep = "\t",row.names = F,quote = F)
     }
   )
@@ -1691,6 +1775,8 @@ server <- function(input, output, session){
       paste0("04.",exp.ds$hubml,".edge.xls")
     },
     content = function(file) {
+      validate(need(!is.null(exp.ds$cyt),
+                    "请先重新完成 Cytoscape export"))
       write.table(x = exp.ds$cyt[[1]],file = file,sep = "\t",row.names = F,quote = F)
     }
   )
@@ -1699,6 +1785,8 @@ server <- function(input, output, session){
       paste0("04.cyt",exp.ds$hubml,".node.xls")
     },
     content = function(file) {
+      validate(need(!is.null(exp.ds$cyt),
+                    "请先重新完成 Cytoscape export"))
       write.table(x = exp.ds$cyt[[2]],file = file,sep = "\t",row.names = F,quote = F)
     }
   )
