@@ -865,10 +865,80 @@ server <- function(input, output, session){
       exp.ds$table[, gene_ids, drop = FALSE]
     }
   }
+  hasNonEmptyDimensions <- function(input_data) {
+    !is.null(input_data) && length(dim(input_data)) == 2 && all(dim(input_data) > 0)
+  }
+
+  inputPreviewSummary <- function(input_data, preview_label) {
+    first_column_name <- if(ncol(input_data) > 0) colnames(input_data)[1] else "None"
+    first_column_unique <- if(ncol(input_data) > 0) length(unique(input_data[[1]])) else 0
+    na_count <- sum(is.na(input_data))
+    paste0(
+      preview_label,
+      " | Rows read: ", nrow(input_data),
+      " | Columns read: ", ncol(input_data),
+      " | First column: ", first_column_name,
+      " | Unique first-column IDs: ", first_column_unique,
+      " | NA values: ", na_count
+    )
+  }
+
   output$Inputbl = DT::renderDataTable({
-    if(is.null(data())){return()}
-    if(length(which(is.na(data()))) != 0) {return()}
-    as.data.frame(t(exp.ds$table2))
+    input_data <- data()
+    if(is.null(input_data)){return()}
+
+    raw_preview <- head(input_data, 10)
+    preview_message <- inputPreviewSummary(
+      input_data,
+      "Raw uploaded matrix preview. Confirm the TSV delimiter and first-column gene IDs before filtering."
+    )
+
+    if(ncol(input_data) < 2) {
+      preview_message <- paste(
+        preview_message,
+        "The matrix has fewer than 2 columns; check whether the file delimiter was detected correctly.",
+        sep = " | "
+      )
+    } else if(length(which(is.na(input_data))) != 0) {
+      preview_message <- paste(
+        preview_message,
+        "Blank or NA values were detected; please clean the matrix before updating information.",
+        sep = " | "
+      )
+    }
+
+    if(hasNonEmptyDimensions(exp.ds$table2)) {
+      filtered_preview <- as.data.frame(t(exp.ds$table2))
+      filtered_preview <- head(filtered_preview, 10)
+      filtered_message <- inputPreviewSummary(
+        filtered_preview,
+        paste0(
+          "Filtered expression matrix preview after clicking Update information! ",
+          "Filtered rows shown here correspond to samples and filtered columns correspond to genes."
+        )
+      )
+      filtered_message <- paste(
+        filtered_message,
+        paste0("Raw upload contained ", nrow(input_data), " rows and ", ncol(input_data), " columns."),
+        sep = " | "
+      )
+      return(DT::datatable(
+        filtered_preview,
+        caption = htmltools::tags$caption(style = "caption-side: top; text-align: left;", filtered_message),
+        options = list(pageLength = 10, scrollX = TRUE)
+      ))
+    }
+
+    preview_message <- paste(
+      preview_message,
+      "Filtered matrix has not been generated yet; click Update information! to run filtering.",
+      sep = " | "
+    )
+    DT::datatable(
+      raw_preview,
+      caption = htmltools::tags$caption(style = "caption-side: top; text-align: left;", preview_message),
+      options = list(pageLength = 10, scrollX = TRUE)
+    )
   })
 
   output$washedGenes = DT::renderDataTable({
