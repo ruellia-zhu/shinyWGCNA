@@ -141,9 +141,9 @@ ui <- shinyUI(
                        fileInput(
                          inputId = "ExpMat",
                          label = "Upload expression matrix",
-                         accept = c(".txt",".csv",".xls")
+                         accept = c(".txt", ".tsv", ".tab", ".csv", ".xls")
                        ),
-                       p("accept Tab-delimited .txt/.xls files and comma-separated .csv files",
+                       p("accept Tab-delimited .txt/.tsv/.tab/.xls files and comma-separated .csv files",
                          style = "color: #7a8788;font-size: 12px; font-style:Italic"),
                        radioButtons(
                          inputId = "format",
@@ -171,9 +171,9 @@ ui <- shinyUI(
                        textInput(
                          inputId = "RCcut",
                          label = "Expression Cutoff",
-                         value = "0.0001"
+                         value = "1"
                        ),
-                       p("Noise removal: for count data, for example, remove features with count less than 10 in more than 90% of samples; for FPKM/TPM, use a small expression cutoff such as 0.0001 by default.",
+                       p("Noise removal: for count data, for example, remove features with count less than 10 in more than 90% of samples; for FPKM/TPM, use expression cutoff 1 by default.",
                          style = "color: #7a8788;font-size: 12px; font-style:Italic"),
                        br(),
                        HTML('<font color = #FF6347 size = 3.2><b>Second Time filter</b></font>'),
@@ -623,6 +623,61 @@ ui <- shinyUI(
   )## navbarPage
 )## UI
 
+readExpressionMatrix <- function(upload) {
+  ext <- tolower(tools::file_ext(upload$name))
+  first_lines <- readLines(upload$datapath, n = 10, warn = FALSE, encoding = "UTF-8")
+  first_lines <- sub("^\\ufeff", "", first_lines)
+  first_line <- first_lines[nzchar(first_lines)][1]
+  if(is.na(first_line)) {
+    first_line <- ""
+  }
+  countDelimiter <- function(delimiter) {
+    matches <- gregexpr(delimiter, first_line, fixed = TRUE)[[1]]
+    if(identical(matches, -1L)) {
+      return(0)
+    }
+    length(matches)
+  }
+  sep <- if(ext == "csv") {
+    ","
+  } else if(ext %in% c("txt", "tsv", "tab", "xls")) {
+    "\t"
+  } else if(countDelimiter("\t") >= countDelimiter(",")) {
+    "\t"
+  } else {
+    ","
+  }
+
+  encodings <- c("UTF-8-BOM", "UTF-8", "GB18030", "")
+  last_error <- NULL
+  for(file_encoding in encodings) {
+    read_args <- list(file = upload$datapath,
+                      sep = sep,
+                      header = TRUE,
+                      stringsAsFactors = FALSE,
+                      check.names = FALSE,
+                      quote = "\"",
+                      comment.char = "",
+                      na.strings = c("NA", "", "NaN"))
+    if(nzchar(file_encoding)) {
+      read_args$fileEncoding <- file_encoding
+    }
+    table <- tryCatch(do.call(read.table, read_args),
+                      error = function(e) {
+                        last_error <<- e
+                        NULL
+                      })
+    if(!is.null(table)) {
+      names(table) <- sub("^\\ufeff", "", names(table))
+      if(ncol(table) > 0 && is.character(table[[1]])) {
+        table[[1]] <- sub("^\\ufeff", "", table[[1]])
+      }
+      return(table)
+    }
+  }
+  stop(last_error)
+}
+
 server <- function(input, output, session){
   observeEvent(input$toggleSidebar, {
     shinyjs::toggle(id = "Sidebar")
@@ -645,13 +700,7 @@ server <- function(input, output, session){
   data <- reactive({
     file1 <- input$ExpMat
     if(is.null(file1)){return()}
-    first_line <- readLines(file1$datapath, n = 1, warn = FALSE)
-    sep <- ifelse(grepl(",", first_line) & !grepl("\t", first_line), ",", "\t")
-    read.table(file = file1$datapath,
-               sep = sep,
-               header = T,
-               stringsAsFactors = F,
-               check.names = FALSE)
+    readExpressionMatrix(file1)
   })
 
   output$Inputcheck = renderUI({
@@ -707,7 +756,7 @@ server <- function(input, output, session){
     } else if(fmt() == "FPKM") {
       updateSelectInput(session, "method1",choices = c(FPKM_TPM = "rawFPKM",
                                                        logFPKM_TPM = "lgFPKM"))
-      updateTextInput(session,"RCcut",value = 0.0001)
+      updateTextInput(session,"RCcut",value = 1)
     }
 
   })
@@ -756,7 +805,7 @@ server <- function(input, output, session){
             if(is.null(exp.ds$table) || nrow(exp.ds$table) == 0 || ncol(exp.ds$table) == 0) {
               exp.ds$table2 = data.frame()
               return(HTML(paste0('<font color = blue><b>No genes remain after the first filter.</b></font><br/>',
-                                 'For FPKM/TPM input, please use a smaller Expression Cutoff (default 0.0001) or lower the Sample percentage.')))
+                                 'For FPKM/TPM input, please use a smaller Expression Cutoff (default 1) or lower the Sample percentage.')))
             }
             reserved_gene_num <- min(GNC(), nrow(exp.ds$table))
             gene_num_cut <- 1 - reserved_gene_num/nrow(exp.ds$table)
