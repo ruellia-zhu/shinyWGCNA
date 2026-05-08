@@ -289,6 +289,24 @@ call_powertest <- function(power.test, datExpr, nGenes, type = "unsigned") {
   }
 }
 
+call_getMt <- function(phenotype, MEs_col, nSamples, moduleColors, datExpr) {
+  getMt_formals <- names(formals(getMt))
+
+  if ("MEs_col" %in% getMt_formals) {
+    getMt(phenotype = phenotype, MEs_col = MEs_col,
+          nSamples = nSamples, moduleColors = moduleColors, datExpr = datExpr)
+  } else if ("MEs" %in% getMt_formals) {
+    getMt(phenotype = phenotype, MEs = MEs_col,
+          nSamples = nSamples, moduleColors = moduleColors, datExpr = datExpr)
+  } else {
+    stop(
+      "Unsupported getMt signature: expected argument 'MEs_col' or 'MEs'. ",
+      "Current getMt arguments: ", paste(getMt_formals, collapse = ", "),
+      call. = FALSE
+    )
+  }
+}
+
 # 01. UI =========================
 ## logo
 customLogo <- shinyDashboardLogoDIY(
@@ -1253,8 +1271,8 @@ server <- function(input, output, session){
                                  trait_data[,-1])
       }
       exp.ds$phen =  exp.ds$phen[match(rownames(exp.ds$table2),rownames(exp.ds$phen)),]
-      exp.ds$traitout = getMt(phenotype = exp.ds$phen,MEs_col = exp.ds$MEs_col,
-                              nSamples = exp.ds$nSamples,moduleColors = exp.ds$moduleColors,datExpr = exp.ds$table2)
+      exp.ds$traitout = call_getMt(phenotype = exp.ds$phen, MEs_col = exp.ds$MEs_col,
+                                   nSamples = exp.ds$nSamples, moduleColors = exp.ds$moduleColors, datExpr = exp.ds$table2)
       exp.ds$xangle = as.numeric(input$xangle)
       exp.ds$c_min = as.character(input$colormin)
       exp.ds$c_mid = as.character(input$colormid)
