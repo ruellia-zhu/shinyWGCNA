@@ -3,9 +3,9 @@
 #	Assignment: WGCNA by click shiny app
 #	Author: Shawn Wang
 #	Date: Jan 12, 2021
-# V2.0 Updater : Yuntao Zhu
-# Update date: 2022/04/28
-# Update V2.0: set the memory size and fix bugs in filtering hub genes
+# V3.0 Updater : Yuntao Zhu
+# Update date: 2026/05/08
+# Update V3.0: configure WGCNA server threads, support FPKM/TPM labels, restore cleaned genes, and add TOMplot
 ###############################
 select = dplyr::select
 ### You must set this before app is loaded, or hub gene will not work - by yuntao
@@ -69,7 +69,7 @@ select =  dplyr::select
 # corType = "pearson"
 # maxPOutliers = ifelse(corType=="pearson",1,0.05)
 # robustY = ifelse(corType=="pearson",T,F)
-allowWGCNAThreads()
+enableWGCNAThreads(nThreads = 20)
 # functions =========================
 
 # 01. UI =========================
@@ -79,7 +79,7 @@ customLogo <- shinyDashboardLogoDIY(
   boldText = "Interactive"
   ,mainText = "WGCNA with GUI"
   ,textSize = 14
-  ,badgeText = "v2.0"
+  ,badgeText = "v3.0"
   ,badgeTextColor = "white"
   ,badgeTextSize = 2
   ,badgeBackColor = "#40E0D0"
@@ -97,39 +97,34 @@ ui <- shinyUI(
                  div(id = "Sidebar0",
                      sidebarPanel(
                        width = 3,
-                       p("System Status", style = "color: #000000;font-size: 24px; font-style:bold"),
-                       paste("Default memory limit: ", memory.limit(), "MB"),
-                       
-                       p("Set memory limit (GB)", style = "color: #000000;font-size: 24px; font-style:bold"),
+                       p("WGCNA Thread Settings", style = "color: #000000;font-size: 24px; font-style:bold"),
                        sliderInput(
-                         inputId = "memory.limit",
-                         label = "at lease 32GB is recommended",
+                         inputId = "wgcna.threads",
+                         label = "Server threads used by WGCNA",
                          min = 4,
-                         max = 128,
-                         value = 32,
-                         step = 4
+                         max = 64,
+                         value = 20,
+                         step = 1
                        ),
-                       helpText("Set the memory size that R will use for WGCNA, this memory must be larger than your physical memory size.",
+                       helpText("Set how many server CPU threads WGCNA can use for network analysis. Choose a value according to server load and available cores.",
                          style = "color: #7a8788;font-size: 12px; font-style:Italic"),
-                       helpText("The memory setting tool is only for Windows, macOS and Linux don't need to adjust memory limit.",
+                       helpText("Default is 20 threads. Lower values reduce server pressure; higher values may speed up large analyses but can affect other users.",
                                 style = "color: #7a8788;font-size: 12px; font-style:Italic"),
                        
                      )# sidebarPanel
                  ),# div
                  mainPanel(
-                   p("Memory limit you have set", style = "color: #000000;font-size: 24px; font-style:bold"),
-                   textOutput("show.memory.limit"),
-                   actionButton("set.memory.limit",
-                                "Set memory limit"),
-                   p("Everytime you set a new memory limit, you should click set button to make it work.", style = "color: #000000;font-size: 16px; font-style:bold"),
-                   p("Memory limit actually", style = "color: #000000;font-size: 24px; font-style:bold"),
-                   textOutput("current.memory.limit"),
-                   actionButton("update.memory.limit","Update memory limit actually"),
-                   p("Everytime you set a new memory limit, you should click update button to get how many memory will be used for WGCNA actually.", style = "color: #000000;font-size: 16px; font-style:bold"),
+                   p("WGCNA threads selected", style = "color: #000000;font-size: 24px; font-style:bold"),
+                   textOutput("show.wgcna.threads"),
+                   actionButton("set.wgcna.threads",
+                                "Apply thread setting"),
+                   p("Click the apply button before running WGCNA steps so the selected thread count is used by WGCNA.", style = "color: #000000;font-size: 16px; font-style:bold"),
+                   p("WGCNA threads actually configured", style = "color: #000000;font-size: 24px; font-style:bold"),
+                   textOutput("current.wgcna.threads"),
                    p("NOTE", style = "color: #000000;font-size: 24px; font-style:bold"),
-                   p("1. Memory limit can't be decreased, you must set it higher than your current memory limit", style = "color: #000000;font-size: 16px; font-style:bold"),
-                   p("2. This app's primary content and original version is developed by Shawn Wang. You can attach Wang's original version in the URL below.", style = "color: #000000;font-size: 16px; font-style:bold"),
-                   p("3. The memory setting tool is developed by Yuntao Zhu, and some bugs that cause hub-gene to not work are also fixed.", style = "color: #000000;font-size: 16px; font-style:bold"),
+                   p("1. The old Windows-only R memory-limit adjustment has been removed because it is obsolete in modern R environments.", style = "color: #000000;font-size: 16px; font-style:bold"),
+                   p("2. This server-oriented setting controls the number of CPU threads WGCNA may use; it does not change the server memory limit.", style = "color: #000000;font-size: 16px; font-style:bold"),
+                   p("3. This app's primary content and original version is developed by Shawn Wang. You can attach Wang's original version in the URL below.", style = "color: #000000;font-size: 16px; font-style:bold"),
                    p("4. This app has never been sold. ", style = "color: #000000;font-size: 16px; font-style:bold"),
                    p("Shawn Wang's original version: https://github.com/ShawnWx2019/WGCNA-shinyApp")
                  )
@@ -153,18 +148,18 @@ ui <- shinyUI(
                        radioButtons(
                          inputId = "format",
                          label = "Format",
-                         choices = c("count","FPKM"),
+                         choices = c("count", "FPKM/TPM" = "FPKM"),
                          selected = "FPKM"
                        ),
-                       p("Normalized included: FPKM, RPKM, CPM and other method",
+                       p("Normalized expression input includes FPKM, TPM, RPKM, CPM and other already-normalized expression values",
                          style = "color: #7a8788;font-size: 12px; font-style:Italic"),
                        selectInput(
                          inputId = "method1",
                          label = "Normalized method",
                          choices = c(VST = "varianceStabilizingTransformation",
                                      lgCPM = "lgcpm",
-                                     FPKM = "rawFPKM",
-                                     lgFPKM = "lgFPKM"),
+                                     FPKM_TPM = "rawFPKM",
+                                     logFPKM_TPM = "lgFPKM"),
                          selected = "rawFPKM"
                        ),
                        HTML('<font color = #FF6347  size = 3.2><b>First Time filter</b></font>'),
@@ -213,6 +208,14 @@ ui <- shinyUI(
                        tabPanel(title = "Preview of Input",height = "500px",width = "100%",
                                 icon = icon("table"),
                                 DT::dataTableOutput("Inputbl"),
+                       ),
+                       tabPanel(title = "Cleaned genes",height = "500px",width = "100%",
+                                icon = icon("recycle"),
+                                p("Search and select genes removed by cleaning, then add them back to the Input gene table.",
+                                  style = "color: #7a8788;font-size: 12px; font-style:Italic"),
+                                DT::dataTableOutput("washedGenes"),
+                                actionButton("addWashedGenes", "Add selected cleaned genes to Input"),
+                                htmlOutput("addWashedGenesInfo")
                        ),
                        tabPanel(title = "SampleCluster",height = "500px",width = "100%",
                                 icon = icon("tree"),
@@ -373,6 +376,23 @@ ui <- shinyUI(
                                    value = 10),
                          actionButton("adjust5","Set fig size"),
                          downloadButton("downfig5","Download")
+                       ),
+                       tabPanel(
+                         title = "TOMplot",height = "500px",width = "100%",
+                         icon = icon("th-large"),
+                         HTML('<font size = 2.5 color = #7a8788><i>TOMplot can be very resource-intensive for large gene sets. Run it only when needed.</i></font>'),
+                         actionButton("StartTOMplot", "Plot TOMplot"),
+                         jqui_resizable(
+                           plotOutput("tomplot")
+                         ),
+                         textInput(inputId = "width9",
+                                   label = "width",
+                                   value = 20),
+                         textInput(inputId = "height9",
+                                   label = "height",
+                                   value = 15),
+                         actionButton("adjust9","Set fig size"),
+                         downloadButton("downfig9","Download")
                        ),
                        tabPanel(
                          title = "Gene to module",height = "500px",width = "100%",
@@ -647,30 +667,21 @@ server <- function(input, output, session){
 
   })
   
-  ## set memory limit
+  ## set WGCNA threads
 
   select = dplyr::select
-  memory <- reactiveValues(current_memory = as.numeric(memory.limit()))
-  observeEvent(input$set.memory.limit, {
-    set.memory.gb = input$memory.limit
-    set.memory.mb = set.memory.gb * 1024
-    memory.limit(set.memory.mb)
-    message("OK")
+  wgcna_thread <- reactiveValues(current = 20)
+  output$show.wgcna.threads = renderText({
+    paste(as.character(input$wgcna.threads), "threads")
   })
-  output$current.memory.limit = renderText({
-    current_memory_gb = memory$current_memory / 1024
-    paste(current_memory_gb, "GB (", memory$current_memory, " MB )")
+  output$current.wgcna.threads = renderText({
+    paste(as.character(wgcna_thread$current), "threads")
   })
-  output$show.memory.limit = renderText({
-    memory_gb = as.numeric(input$memory.limit)
-    memory_mb = 1024 * memory_gb
-    paste(as.character(input$memory.limit), " GB (", memory_mb , " MB )")
-  })
-  
-  observeEvent(input$update.memory.limit, {
-    update_memory <- memory.limit()
-    memory$current_memory <- update_memory
-    message("updated")
+  observeEvent(input$set.wgcna.threads, {
+    thread_count <- as.integer(input$wgcna.threads)
+    enableWGCNAThreads(nThreads = thread_count)
+    wgcna_thread$current <- thread_count
+    message(paste("WGCNA threads set to", thread_count))
   })
   
 
@@ -685,8 +696,8 @@ server <- function(input, output, session){
                                                        logCPM = "lgcpm"))
       updateTextInput(session,"RCcut",value = 10)
     } else if(fmt() == "FPKM") {
-      updateSelectInput(session, "method1",choices = c(FPKM = "rawFPKM",
-                                                       logFPKM = "lgFPKM"))
+      updateSelectInput(session, "method1",choices = c(FPKM_TPM = "rawFPKM",
+                                                       logFPKM_TPM = "lgFPKM"))
       updateTextInput(session,"RCcut",value = 1)
     }
 
@@ -753,10 +764,66 @@ server <- function(input, output, session){
 
 
   ## summary num
+  cleanedGeneIds <- reactive({
+    if(is.null(exp.ds$table)){return(character(0))}
+    if(is.null(exp.ds$table2)){return(character(0))}
+    setdiff(colnames(exp.ds$table), colnames(exp.ds$table2))
+  })
+
   output$Inputbl = DT::renderDataTable({
     if(is.null(data())){return()}
     if(length(which(is.na(data()))) != 0) {return()}
     as.data.frame(t(exp.ds$table2))
+  })
+
+  output$washedGenes = DT::renderDataTable({
+    if(is.null(data())){return()}
+    if(length(which(is.na(data()))) != 0) {return()}
+    washed_ids <- cleanedGeneIds()
+    if(length(washed_ids) == 0){
+      return(data.frame(gene_id = character(0)))
+    }
+    washed_data <- as.data.frame(t(exp.ds$table[, washed_ids, drop = FALSE]))
+    washed_data <- cbind(gene_id = rownames(washed_data), washed_data)
+    rownames(washed_data) <- NULL
+    DT::datatable(
+      washed_data,
+      selection = list(mode = "multiple", target = "row"),
+      filter = "top",
+      options = list(pageLength = 10, scrollX = TRUE)
+    )
+  })
+
+  observeEvent(input$addWashedGenes, {
+    if(is.null(exp.ds$table)){return()}
+    if(is.null(exp.ds$table2)){return()}
+    selected_rows <- input$washedGenes_rows_selected
+    if(length(selected_rows) == 0){
+      output$addWashedGenesInfo <- renderUI({
+        HTML('<font color = blue><b>No cleaned genes selected.</b></font>')
+      })
+      return()
+    }
+    washed_ids <- cleanedGeneIds()
+    selected_genes <- washed_ids[selected_rows]
+    selected_genes <- selected_genes[!is.na(selected_genes)]
+    selected_genes <- setdiff(selected_genes, colnames(exp.ds$table2))
+    if(length(selected_genes) == 0){
+      output$addWashedGenesInfo <- renderUI({
+        HTML('<font color = blue><b>Selected genes are already in Input.</b></font>')
+      })
+      return()
+    }
+    exp.ds$table2 <- cbind(exp.ds$table2, exp.ds$table[, selected_genes, drop = FALSE])
+    exp.ds$param <- getsampleTree(exp.ds$table2, layout = exp.ds$layout)
+    exp.ds$sft <- NULL
+    exp.ds$power <- NULL
+    exp.ds$net <- NULL
+    exp.ds$tomDiss <- NULL
+    exp.ds$tomGeneTree <- NULL
+    output$addWashedGenesInfo <- renderUI({
+      HTML(paste0('<font color = red><b>', length(selected_genes), '</b></font> cleaned genes were added back to Input. Please rerun downstream WGCNA analyses.'))
+    })
   })
   ## sample tree
   output$clustPlot = renderPlot({
@@ -901,6 +968,29 @@ server <- function(input, output, session){
                             marHeatmap = c(3,4,2,2), plotDendrograms = T,
                             xLabelsAngle = 90)
     })
+
+  observeEvent(input$StartTOMplot, {
+    if(is.null(exp.ds$net)){return()}
+    if(is.null(exp.ds$table2)){return()}
+    if(is.null(exp.ds$power)){return()}
+    withProgress(message = 'TOMplot', value = 0, {
+      incProgress(1/3, detail = "Calculating adjacency matrix")
+      adjacency_matrix <- adjacency(exp.ds$table2, power = exp.ds$power)
+      incProgress(1/3, detail = "Calculating TOM similarity")
+      TOM <- TOMsimilarity(adjacency_matrix)
+      exp.ds$tomDiss <- 1 - TOM
+      incProgress(1/3, detail = "Clustering genes for TOMplot")
+      exp.ds$tomGeneTree <- hclust(as.dist(exp.ds$tomDiss), method = "average")
+    })
+  })
+
+  output$tomplot = renderPlot({
+    input$StartTOMplot
+    if(is.null(exp.ds$tomDiss)){return()}
+    if(is.null(exp.ds$tomGeneTree)){return()}
+    plotTOM <- exp.ds$tomDiss^7
+    TOMplot(plotTOM, exp.ds$tomGeneTree, exp.ds$moduleColors, main = "Network heatmap plot, all genes")
+  })
 
   output$g2m = DT::renderDataTable({
     input$Startnet
@@ -1203,6 +1293,13 @@ server <- function(input, output, session){
     }
   )
   observeEvent(
+    input$adjust9,
+    {
+      downloads$width9 <- as.numeric(input$width9)
+      downloads$height9 <-  as.numeric(input$height9)
+    }
+  )
+  observeEvent(
     input$adjust10,
     {
       downloads$width10 <- as.numeric(input$width10)
@@ -1257,6 +1354,17 @@ server <- function(input, output, session){
                             marDendro = c(3,3,2,4),
                             marHeatmap = c(3,4,2,2), plotDendrograms = T,
                             xLabelsAngle = 90)
+      dev.off()
+    }
+  )
+  output$downfig9 = downloadHandler(
+    filename = function() {
+      "06.TOMplot.pdf"
+    },
+    content = function(file) {
+      pdf(file = file,width = downloads$width9, height = downloads$height9)
+      plotTOM <- exp.ds$tomDiss^7
+      TOMplot(plotTOM, exp.ds$tomGeneTree, exp.ds$moduleColors, main = "Network heatmap plot, all genes")
       dev.off()
     }
   )
