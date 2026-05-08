@@ -217,6 +217,12 @@ ui <- shinyUI(
                                 actionButton("addWashedGenes", "Add selected cleaned genes to Input"),
                                 htmlOutput("addWashedGenesInfo")
                        ),
+                       tabPanel(title = "Final analysis input",height = "500px",width = "100%",
+                                icon = icon("table"),
+                                p("Final expression matrix used by downstream SFT and network construction after cleaning and any add-back selections.",
+                                  style = "color: #7a8788;font-size: 12px; font-style:Italic"),
+                                DT::dataTableOutput("finalAnalysisInput")
+                       ),
                        tabPanel(title = "SampleCluster",height = "500px",width = "100%",
                                 icon = icon("tree"),
                                 jqui_resizable(
@@ -1029,6 +1035,20 @@ server <- function(input, output, session){
     )
   })
 
+  output$finalAnalysisInput = DT::renderDataTable({
+    if(!hasNonEmptyDimensions(exp.ds$table2)){
+      return(data.frame(gene_id = character(0)))
+    }
+    final_input <- as.data.frame(t(exp.ds$table2))
+    final_input <- cbind(gene_id = rownames(final_input), final_input)
+    rownames(final_input) <- NULL
+    DT::datatable(
+      final_input,
+      filter = "top",
+      options = list(pageLength = 10, scrollX = TRUE)
+    )
+  })
+
   observeEvent(input$addWashedGenes, {
     if(is.null(exp.ds$table)){return()}
     if(is.null(exp.ds$table2)){return()}
@@ -1053,7 +1073,7 @@ server <- function(input, output, session){
     exp.ds$param <- getsampleTree(exp.ds$table2, layout = exp.ds$layout)
     clearDownstreamAnalysisState(exp.ds)
     output$addWashedGenesInfo <- renderUI({
-      HTML(paste0('<font color = red><b>', length(selected_genes), '</b></font> cleaned genes were added back to Input. Please rerun downstream WGCNA analyses.'))
+      HTML(paste0('<font color = red><b>', length(selected_genes), '</b></font> cleaned genes were added back to Input. The final analysis matrix below now includes the added-back genes. Please rerun downstream WGCNA analyses.'))
     })
   })
   ## sample tree
