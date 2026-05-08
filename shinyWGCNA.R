@@ -831,8 +831,8 @@ server <- function(input, output, session){
   exp.ds<-reactiveValues(data=NULL)
   downloads <- reactiveValues(data = NULL)
 
-  clearDownstreamAnalysisState <- function(exp.ds) {
-    downstream_names <- c(
+  downstreamAnalysisStateNames <- function() {
+    c(
       "sft", "cksft", "power", "netout", "net", "moduleLabels",
       "moduleColors", "MEs_col", "MEs", "Gene2module", "nSamples",
       "tomDiss", "tomGeneTree", "phen", "traitout", "modTraitCor",
@@ -841,7 +841,14 @@ server <- function(input, output, session){
       "kMEcut", "GScut", "threshold", "xangle", "c_min", "c_mid",
       "c_max", "mod_color", "mod_color_anno", "Left_anno"
     )
-    for(downstream_name in downstream_names) {
+  }
+
+  clearDownstreamAnalysisState <- function(exp.ds) {
+    # Any change to exp.ds$table2 invalidates soft-threshold, network,
+    # module-trait, hub-gene, and Cytoscape outputs. Keep this helper shared
+    # by Update information and add-washed-genes so stale state is cleared
+    # consistently.
+    for(downstream_name in downstreamAnalysisStateNames()) {
       exp.ds[[downstream_name]] <- NULL
     }
     invisible(exp.ds)
@@ -1048,6 +1055,8 @@ server <- function(input, output, session){
       exp.ds$added_back_gene_count + length(selected_genes)
     }
     exp.ds$param <- getsampleTree(exp.ds$table2, layout = exp.ds$layout)
+    # Reusing the Update information cleanup keeps every object derived from
+    # the old table2/power/network from leaking into the new analysis input.
     clearDownstreamAnalysisState(exp.ds)
     output$addWashedGenesInfo <- renderUI({
       HTML(paste0('<font color = red><b>', length(selected_genes), '</b></font> cleaned genes were added back to Input. The final analysis matrix below now includes the added-back genes. Please rerun downstream WGCNA analyses.'))
