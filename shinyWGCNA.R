@@ -1651,7 +1651,7 @@ server <- function(input, output, session){
       "09.GSvsMM.all.pdf"
     },
     content = function(file) {
-      pdf(file = file,width = downloads$width8, height = downloads$height8)
+      pdf(file = file,width = downloads$width10, height = downloads$height10)
       print(MMvsGSall(which.trait = exp.ds$st,
                 traitData = exp.ds$phen,nSamples = exp.ds$nSamples,
                 datExpr = exp.ds$table2,
