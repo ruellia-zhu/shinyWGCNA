@@ -910,7 +910,7 @@ server <- function(input, output, session){
         isolate(HTML(paste0('<font color = red> <b>After filtered by conditions:</b> </font>removing all features with expression/count less than <font color = red><b>',rccutoff(),'</b></font> in more than <font color = red> <b>',100*sampP(),'% </b></font> of the samples','<br/>',
                             '<font color = red> <b>Remaining Gene Numbers: </b> </font>',first_filter_gene_count,'<br/>',
                             '<font color = red> <b>After filtered by conditions:</b> </font>Genes with <font color = red><b>',cutmethod(),'</b></font> ranked top <font color = red> <b>',min(GNC(), first_filter_gene_count),' </b></font> of all expressed genes','<br/>',
-                            '<font color = red> <b>Remaining Gene Numbers: </b> </font>',second_filter_gene_count))))
+                            '<font color = red> <b>Remaining Gene Numbers: </b> </font>',second_filter_gene_count)))
       })
     }
   )
