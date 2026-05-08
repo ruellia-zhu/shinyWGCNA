@@ -862,6 +862,9 @@ server <- function(input, output, session){
       exp.ds$table2 = data.frame()
       exp.ds$param = list()
       exp.ds$layout = as.character(input$treelayout)
+      exp.ds$first_filter_gene_count = 0
+      exp.ds$second_filter_gene_count = 0
+      exp.ds$added_back_gene_count = 0
 
       output$filter1 = renderUI({
         input$action1
@@ -881,6 +884,7 @@ server <- function(input, output, session){
                                  'For FPKM/TPM input, please use a smaller Expression Cutoff (default 1) or lower the Sample percentage.')))
             }
             first_filter_gene_count <- ncol(exp.ds$table)
+            exp.ds$first_filter_gene_count <- first_filter_gene_count
             reserved_gene_num <- min(GNC(), first_filter_gene_count)
             # exp.ds$table is passed to WGCNA as samples x genes; GeneNumCut is the proportion of gene columns to remove.
             gene_num_cut <- 1 - reserved_gene_num/first_filter_gene_count
@@ -891,6 +895,7 @@ server <- function(input, output, session){
               return(HTML('<font color = blue><b>No genes remain after the second filter.</b></font> Please reduce the Reserved genes Num. or adjust the filter settings.'))
             }
             second_filter_gene_count <- ncol(exp.ds$table2)
+            exp.ds$second_filter_gene_count <- second_filter_gene_count
             exp.ds$param = getsampleTree(exp.ds$table2,layout = exp.ds$layout)
             Sys.sleep(0.1)
           }
@@ -945,17 +950,28 @@ server <- function(input, output, session){
     !is.null(input_data) && length(dim(input_data)) == 2 && all(dim(input_data) > 0)
   }
 
-  inputPreviewSummary <- function(input_data, preview_label) {
+  inputPreviewSummary <- function(input_data) {
     first_column_name <- if(ncol(input_data) > 0) colnames(input_data)[1] else "None"
     first_column_unique <- if(ncol(input_data) > 0) length(unique(input_data[[1]])) else 0
     na_count <- sum(is.na(input_data))
     paste0(
-      preview_label,
-      " | Rows read: ", nrow(input_data),
-      " | Columns read: ", ncol(input_data),
+      "Raw read dimensions: ", nrow(input_data), " x ", ncol(input_data),
       " | First column: ", first_column_name,
       " | Unique first-column IDs: ", first_column_unique,
       " | NA values: ", na_count
+    )
+  }
+
+  finalAnalysisInputSummary <- function(final_input) {
+    first_filter_gene_count <- if(is.null(exp.ds$first_filter_gene_count)) 0 else exp.ds$first_filter_gene_count
+    second_filter_gene_count <- if(is.null(exp.ds$second_filter_gene_count)) 0 else exp.ds$second_filter_gene_count
+    added_back_gene_count <- if(is.null(exp.ds$added_back_gene_count)) 0 else exp.ds$added_back_gene_count
+    paste0(
+      "First-round remaining genes: ", first_filter_gene_count,
+      " | Second-round retained genes: ", second_filter_gene_count,
+      " | User added-back genes: ", added_back_gene_count,
+      " | Final analysis samples: ", nrow(final_input),
+      " | Final analysis genes: ", ncol(final_input)
     )
   }
 
@@ -964,55 +980,9 @@ server <- function(input, output, session){
     if(is.null(input_data)){return()}
 
     raw_preview <- head(input_data, 10)
-    preview_message <- inputPreviewSummary(
-      input_data,
-      "Raw uploaded matrix preview. Confirm the TSV delimiter and first-column gene IDs before filtering."
-    )
-
-    if(ncol(input_data) < 2) {
-      preview_message <- paste(
-        preview_message,
-        "The matrix has fewer than 2 columns; check whether the file delimiter was detected correctly.",
-        sep = " | "
-      )
-    } else if(length(which(is.na(input_data))) != 0) {
-      preview_message <- paste(
-        preview_message,
-        "Blank or NA values were detected; please clean the matrix before updating information.",
-        sep = " | "
-      )
-    }
-
-    if(hasNonEmptyDimensions(exp.ds$table2)) {
-      filtered_preview <- as.data.frame(t(exp.ds$table2))
-      filtered_preview <- head(filtered_preview, 10)
-      filtered_message <- inputPreviewSummary(
-        filtered_preview,
-        paste0(
-          "Filtered expression matrix preview after clicking Update information! ",
-          "Filtered rows shown here correspond to samples and filtered columns correspond to genes."
-        )
-      )
-      filtered_message <- paste(
-        filtered_message,
-        paste0("Raw upload contained ", nrow(input_data), " rows and ", ncol(input_data), " columns."),
-        sep = " | "
-      )
-      return(DT::datatable(
-        filtered_preview,
-        caption = htmltools::tags$caption(style = "caption-side: top; text-align: left;", filtered_message),
-        options = list(pageLength = 10, scrollX = TRUE)
-      ))
-    }
-
-    preview_message <- paste(
-      preview_message,
-      "Filtered matrix has not been generated yet; click Update information! to run filtering.",
-      sep = " | "
-    )
     DT::datatable(
       raw_preview,
-      caption = htmltools::tags$caption(style = "caption-side: top; text-align: left;", preview_message),
+      caption = htmltools::tags$caption(style = "caption-side: top; text-align: left;", inputPreviewSummary(input_data)),
       options = list(pageLength = 10, scrollX = TRUE)
     )
   })
@@ -1040,10 +1010,12 @@ server <- function(input, output, session){
       return(data.frame(gene_id = character(0)))
     }
     final_input <- as.data.frame(t(exp.ds$table2))
+    final_analysis_message <- finalAnalysisInputSummary(exp.ds$table2)
     final_input <- cbind(gene_id = rownames(final_input), final_input)
     rownames(final_input) <- NULL
     DT::datatable(
       final_input,
+      caption = htmltools::tags$caption(style = "caption-side: top; text-align: left;", final_analysis_message),
       filter = "top",
       options = list(pageLength = 10, scrollX = TRUE)
     )
@@ -1070,6 +1042,11 @@ server <- function(input, output, session){
       return()
     }
     exp.ds$table2 <- cbind(exp.ds$table2, cleanedGenesForInput(selected_genes))
+    exp.ds$added_back_gene_count <- if(is.null(exp.ds$added_back_gene_count)) {
+      length(selected_genes)
+    } else {
+      exp.ds$added_back_gene_count + length(selected_genes)
+    }
     exp.ds$param <- getsampleTree(exp.ds$table2, layout = exp.ds$layout)
     clearDownstreamAnalysisState(exp.ds)
     output$addWashedGenesInfo <- renderUI({
