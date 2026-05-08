@@ -701,12 +701,10 @@ readExpressionMatrix <- function(upload) {
             expression_format_message
           ), call. = FALSE)
         }
-        rownames(table) <- gene_ids
-        table <- table[-1]
       }
 
-
-      for(column_name in names(table)) {
+      expression_column_names <- names(table)[-1]
+      for(column_name in expression_column_names) {
         original_column <- table[[column_name]]
         converted_column <- suppressWarnings(as.numeric(as.character(original_column)))
         if(any(is.na(converted_column) & !is.na(original_column))) {
@@ -718,6 +716,7 @@ readExpressionMatrix <- function(upload) {
         }
         table[[column_name]] <- converted_column
       }
+      rownames(table) <- NULL
       return(table)
     }
   }
@@ -1089,7 +1088,15 @@ server <- function(input, output, session){
   output$clustPlot = renderPlot({
     if(is.null(data())){return()}
     if(length(which(is.na(data()))) != 0) {return()}
-    if(!filterSucceeded()){return()}
+    validate(
+      need(!is.null(exp.ds$table2) &&
+             length(dim(exp.ds$table2)) == 2 &&
+             nrow(exp.ds$table2) > 0 &&
+             ncol(exp.ds$table2) > 0,
+           "请先成功完成 Update information / filtering"),
+      need(!is.null(exp.ds$param$sampleTree),
+           "请先成功完成 Update information / filtering")
+    )
     plot(exp.ds$param$sampleTree,main = "Sample clustering to detect outlier", sub = "", xlab = "")
   })
   ## download sample tree
@@ -1572,6 +1579,10 @@ server <- function(input, output, session){
       "01.SampleCluster.nwk"
     },
     content = function(file) {
+      validate(
+        need(!is.null(exp.ds$param$tree),
+             "请先成功完成 Update information / filtering")
+      )
       write.tree(phy = exp.ds$param$tree,file = file)
     }
   )
