@@ -668,9 +668,55 @@ readExpressionMatrix <- function(upload) {
                         NULL
                       })
     if(!is.null(table)) {
-      names(table) <- sub("^\\ufeff", "", names(table))
-      if(ncol(table) > 0 && is.character(table[[1]])) {
-        table[[1]] <- sub("^\\ufeff", "", table[[1]])
+      stripUtf8BomAndWhitespace <- function(x) {
+        utf8_bom <- rawToChar(as.raw(c(0xEF, 0xBB, 0xBF)))
+        trimws(gsub(utf8_bom, "", x, fixed = TRUE))
+      }
+      expression_format_message <- paste(
+        "Expected expression matrix format: the first column must contain unique, non-empty gene IDs",
+        "and every remaining column must contain numeric sample expression values."
+      )
+      names(table) <- stripUtf8BomAndWhitespace(names(table))
+      if(ncol(table) > 0 && (is.character(table[[1]]) || is.factor(table[[1]]))) {
+        table[[1]] <- stripUtf8BomAndWhitespace(as.character(table[[1]]))
+      }
+
+      first_column_is_gene_id <- ncol(table) > 1 &&
+        (is.character(table[[1]]) || is.factor(table[[1]]))
+
+      if(first_column_is_gene_id) {
+        gene_ids <- table[[1]]
+        if(any(is.na(gene_ids) | !nzchar(gene_ids))) {
+          stop(paste(
+            "Gene ID column contains empty or missing gene IDs.",
+            expression_format_message
+          ), call. = FALSE)
+        }
+        duplicated_gene_ids <- unique(gene_ids[duplicated(gene_ids)])
+        if(length(duplicated_gene_ids) > 0) {
+          stop(paste(
+            "Gene ID column contains duplicate gene IDs:",
+            paste(utils::head(duplicated_gene_ids, 5), collapse = ", "),
+            "Please make gene IDs unique before uploading.",
+            expression_format_message
+          ), call. = FALSE)
+        }
+        rownames(table) <- gene_ids
+        table <- table[-1]
+      }
+
+
+      for(column_name in names(table)) {
+        original_column <- table[[column_name]]
+        converted_column <- suppressWarnings(as.numeric(as.character(original_column)))
+        if(any(is.na(converted_column) & !is.na(original_column))) {
+          stop(paste(
+            "Expression column", shQuote(column_name),
+            "contains non-numeric expression values. Please check the non-numeric expression values and upload again.",
+            expression_format_message
+          ), call. = FALSE)
+        }
+        table[[column_name]] <- converted_column
       }
       return(table)
     }
@@ -708,17 +754,17 @@ server <- function(input, output, session){
     if(ncol(data()) < 2) {
       HTML(
         '<font color = blue><b>Sorry!</b></font>
-       Your expression matrix has fewer than 2 columns. Please check whether the file delimiter is correct and upload a gene-by-sample table again.
+       Your expression matrix has fewer than 2 sample columns after reading. Expected format: first column is gene IDs; all remaining columns are numeric sample expression values. Please check whether the file delimiter is correct and upload a gene-by-sample table again.
        '
       )
     } else if(length(which(is.na(data()))) == 0) {
       HTML('<font color = red><b>
-          Congratulations!,</b></font> There is no problem with your expression matrix format, please proceed to the next step
+          Congratulations!,</b></font> There is no problem with your expression matrix format. Expected format confirmed: first column contains gene IDs and the remaining columns contain numeric sample expression values. Please proceed to the next step
           ')
     } else {
       HTML(
         '<font color = blue><b>Sorry!</b></font>
-       Your expression matrix has blank (NA) values or blank (NA) rows,<font color = blue> Please double check and manually remove the blanks or rows and upload file again</font>
+       Your expression matrix has blank (NA) expression values or rows,<font color = blue> Please double check that the first column contains gene IDs and every remaining column contains numeric sample expression values, then manually remove blanks and upload the file again</font>
        '
       )
     }
