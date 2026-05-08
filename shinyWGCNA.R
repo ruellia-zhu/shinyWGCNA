@@ -672,51 +672,22 @@ readExpressionMatrix <- function(upload) {
         utf8_bom <- rawToChar(as.raw(c(0xEF, 0xBB, 0xBF)))
         trimws(gsub(utf8_bom, "", x, fixed = TRUE))
       }
-      expression_format_message <- paste(
-        "Expected expression matrix format: the first column must contain unique, non-empty gene IDs",
-        "and every remaining column must contain numeric sample expression values."
-      )
       names(table) <- stripUtf8BomAndWhitespace(names(table))
       if(ncol(table) > 0 && (is.character(table[[1]]) || is.factor(table[[1]]))) {
         table[[1]] <- stripUtf8BomAndWhitespace(as.character(table[[1]]))
       }
 
-      first_column_is_gene_id <- ncol(table) > 1 &&
-        (is.character(table[[1]]) || is.factor(table[[1]]))
-
-      if(first_column_is_gene_id) {
-        gene_ids <- table[[1]]
-        if(any(is.na(gene_ids) | !nzchar(gene_ids))) {
-          stop(paste(
-            "Gene ID column contains empty or missing gene IDs.",
-            expression_format_message
-          ), call. = FALSE)
-        }
-        duplicated_gene_ids <- unique(gene_ids[duplicated(gene_ids)])
-        if(length(duplicated_gene_ids) > 0) {
-          stop(paste(
-            "Gene ID column contains duplicate gene IDs:",
-            paste(utils::head(duplicated_gene_ids, 5), collapse = ", "),
-            "Please make gene IDs unique before uploading.",
-            expression_format_message
-          ), call. = FALSE)
-        }
-        rownames(table) <- gene_ids
-        table <- table[-1]
+      if(ncol(table) > 0) {
+        names(table)[1] <- "gene_id"
+        table[[1]] <- stripUtf8BomAndWhitespace(as.character(table[[1]]))
       }
 
-
-      for(column_name in names(table)) {
-        original_column <- table[[column_name]]
-        converted_column <- suppressWarnings(as.numeric(as.character(original_column)))
-        if(any(is.na(converted_column) & !is.na(original_column))) {
-          stop(paste(
-            "Expression column", shQuote(column_name),
-            "contains non-numeric expression values. Please check the non-numeric expression values and upload again.",
-            expression_format_message
-          ), call. = FALSE)
+      if(ncol(table) > 1) {
+        for(column_name in names(table)[-1]) {
+          original_column <- table[[column_name]]
+          converted_column <- suppressWarnings(as.numeric(as.character(original_column)))
+          table[[column_name]] <- converted_column
         }
-        table[[column_name]] <- converted_column
       }
       return(table)
     }
@@ -749,26 +720,76 @@ server <- function(input, output, session){
     readExpressionMatrix(file1)
   })
 
-  output$Inputcheck = renderUI({
-    if(is.null(data())){return()}
-    if(ncol(data()) < 2) {
-      HTML(
-        '<font color = blue><b>Sorry!</b></font>
-       Your expression matrix has fewer than 2 sample columns after reading. Expected format: first column is gene IDs; all remaining columns are numeric sample expression values. Please check whether the file delimiter is correct and upload a gene-by-sample table again.
-       '
-      )
-    } else if(length(which(is.na(data()))) == 0) {
-      HTML('<font color = red><b>
-          Congratulations!,</b></font> There is no problem with your expression matrix format. Expected format confirmed: first column contains gene IDs and the remaining columns contain numeric sample expression values. Please proceed to the next step
-          ')
-    } else {
-      HTML(
-        '<font color = blue><b>Sorry!</b></font>
-       Your expression matrix has blank (NA) expression values or rows,<font color = blue> Please double check that the first column contains gene IDs and every remaining column contains numeric sample expression values, then manually remove blanks and upload the file again</font>
-       '
-      )
+  inputMatrixValidation <- function(input_data) {
+    if(is.null(input_data)) {
+      return(list(valid = FALSE, message = "No expression matrix was uploaded."))
+    }
+    if(ncol(input_data) < 2) {
+      return(list(
+        valid = FALSE,
+        message = "Your expression matrix has fewer than 2 columns after reading. Expected format: first column is gene IDs; all remaining columns are numeric sample expression values. Please check whether the file delimiter is correct and upload a gene-by-sample table again."
+      ))
     }
 
+    gene_ids <- as.character(input_data[[1]])
+    if(any(is.na(gene_ids) | !nzchar(trimws(gene_ids)))) {
+      return(list(
+        valid = FALSE,
+        message = "The first column must contain non-empty gene IDs. Please remove blank gene IDs and upload the file again."
+      ))
+    }
+    duplicated_gene_ids <- unique(gene_ids[duplicated(gene_ids)])
+    if(length(duplicated_gene_ids) > 0) {
+      return(list(
+        valid = FALSE,
+        message = paste0(
+          "The first column must contain unique gene IDs. Duplicate IDs include: ",
+          paste(utils::head(duplicated_gene_ids, 5), collapse = ", "),
+          ". Please make gene IDs unique before uploading."
+        )
+      ))
+    }
+
+    expression_data <- input_data[-1]
+    numeric_columns <- vapply(expression_data, is.numeric, logical(1))
+    if(!all(numeric_columns)) {
+      return(list(
+        valid = FALSE,
+        message = paste0(
+          "Every column after gene_id must contain numeric sample expression values. Non-numeric columns include: ",
+          paste(names(expression_data)[!numeric_columns], collapse = ", "),
+          "."
+        )
+      ))
+    }
+    if(any(is.na(as.matrix(expression_data)))) {
+      return(list(
+        valid = FALSE,
+        message = "Columns after gene_id contain blank, non-numeric, or otherwise invalid NA expression values. Please clean the expression matrix and upload the file again."
+      ))
+    }
+
+    list(valid = TRUE, message = "There is no problem with your expression matrix format. Expected format confirmed: first column contains unique non-empty gene IDs and every remaining column contains numeric sample expression values without invalid NA values. Please proceed to the next step.")
+  }
+
+  expressionMatrixForProcessing <- function(input_data) {
+    validation <- inputMatrixValidation(input_data)
+    if(!validation$valid) {
+      return(NULL)
+    }
+    expression_data <- input_data[-1]
+    rownames(expression_data) <- as.character(input_data[[1]])
+    expression_data
+  }
+
+  output$Inputcheck = renderUI({
+    if(is.null(data())){return()}
+    validation <- inputMatrixValidation(data())
+    if(validation$valid) {
+      HTML(paste0('<font color = red><b>Congratulations!,</b></font> ', validation$message))
+    } else {
+      HTML(paste0('<font color = blue><b>Sorry!</b></font> ', validation$message))
+    }
   })
   
   ## set WGCNA threads
@@ -829,8 +850,8 @@ server <- function(input, output, session){
     input$action1,
     {
       if(is.null(data())){return()}
-      if(ncol(data()) < 2) {return()}
-      if(length(which(is.na(data()))) != 0) {return()}
+      processing_data <- expressionMatrixForProcessing(data())
+      if(is.null(processing_data)) {return()}
       exp.ds$table = data.frame()
       exp.ds$table2 = data.frame()
       exp.ds$param = list()
@@ -844,7 +865,7 @@ server <- function(input, output, session){
           message = "Raw data normlization",
           value = 0,{
             incProgress(1/2,detail = p_mass[1])
-            exp.ds$table = getdatExpr(rawdata = data(),
+            exp.ds$table = getdatExpr(rawdata = processing_data,
                                       RcCutoff = rccutoff(),samplePerc = sampP(),
                                       datatype = fmt(),method = mtd())
             Sys.sleep(0.1)
@@ -939,39 +960,30 @@ server <- function(input, output, session){
       "Raw uploaded matrix preview. Confirm the TSV delimiter and first-column gene IDs before filtering."
     )
 
-    if(ncol(input_data) < 2) {
-      preview_message <- paste(
-        preview_message,
-        "The matrix has fewer than 2 columns; check whether the file delimiter was detected correctly.",
-        sep = " | "
-      )
-    } else if(length(which(is.na(input_data))) != 0) {
-      preview_message <- paste(
-        preview_message,
-        "Blank or NA values were detected; please clean the matrix before updating information.",
-        sep = " | "
-      )
+    validation <- inputMatrixValidation(input_data)
+    if(!validation$valid) {
+      preview_message <- paste(preview_message, validation$message, sep = " | ")
     }
 
     if(hasNonEmptyDimensions(exp.ds$table2)) {
-      filtered_preview <- as.data.frame(t(exp.ds$table2))
-      filtered_preview <- head(filtered_preview, 10)
+      filtered_preview <- head(as.data.frame(exp.ds$table2), 10)
       filtered_message <- inputPreviewSummary(
         filtered_preview,
         paste0(
           "Filtered expression matrix preview after clicking Update information! ",
-          "Filtered rows shown here correspond to samples and filtered columns correspond to genes."
+          "The raw upload preview keeps gene_id as the first column; this filtered preview is transposed for downstream processing, so rows correspond to samples and columns correspond to filtered genes."
         )
       )
       filtered_message <- paste(
         filtered_message,
-        paste0("Raw upload contained ", nrow(input_data), " rows and ", ncol(input_data), " columns."),
+        paste0("Raw upload contained ", nrow(input_data), " gene rows and ", ncol(input_data), " columns including gene_id."),
         sep = " | "
       )
       return(DT::datatable(
         filtered_preview,
         caption = htmltools::tags$caption(style = "caption-side: top; text-align: left;", filtered_message),
-        options = list(pageLength = 10, scrollX = TRUE)
+        options = list(pageLength = 10, scrollX = TRUE),
+        rownames = TRUE
       ))
     }
 
@@ -983,13 +995,14 @@ server <- function(input, output, session){
     DT::datatable(
       raw_preview,
       caption = htmltools::tags$caption(style = "caption-side: top; text-align: left;", preview_message),
-      options = list(pageLength = 10, scrollX = TRUE)
+      options = list(pageLength = 10, scrollX = TRUE),
+      rownames = FALSE
     )
   })
 
   output$washedGenes = DT::renderDataTable({
     if(is.null(data())){return()}
-    if(length(which(is.na(data()))) != 0) {return()}
+    if(!inputMatrixValidation(data())$valid) {return()}
     washed_ids <- cleanedGeneIds()
     if(length(washed_ids) == 0){
       return(data.frame(gene_id = character(0)))
@@ -1039,7 +1052,7 @@ server <- function(input, output, session){
   ## sample tree
   output$clustPlot = renderPlot({
     if(is.null(data())){return()}
-    if(length(which(is.na(data()))) != 0) {return()}
+    if(!inputMatrixValidation(data())$valid) {return()}
     if(is.null(exp.ds$table2)){return()}
     plot(exp.ds$param$sampleTree,main = "Sample clustering to detect outlier", sub = "", xlab = "")
   })
