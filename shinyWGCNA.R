@@ -737,10 +737,10 @@ server <- function(input, output, session){
     shinyjs::toggle(id = "Sidebar4")
   })
   observeEvent(input$toggleSidebar5, {
-    shinyjs::toggle(id = "Sidebar5")
+    shinyjs::toggle(id = "sidebar5")
   })
   observeEvent(input$toggleSidebar6, {
-    shinyjs::toggle(id = "Sidebar6")
+    shinyjs::toggle(id = "sidebar6")
   })
   data <- reactive({
     file1 <- input$ExpMat
