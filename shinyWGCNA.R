@@ -109,7 +109,7 @@ read_expression_matrix <- function(datapath) {
   
   count_delimiter <- function(x, delimiter) {
     matches <- gregexpr(delimiter, x, fixed = TRUE)[[1]]
-    if (identical(matches, -1L)) 0L else length(matches)
+    if (length(matches) == 1 && matches[1] == -1L) 0L else length(matches)
   }
   header_line <- preview_lines[1]
   delimiter_counts <- c(
@@ -161,6 +161,83 @@ read_expression_matrix <- function(datapath) {
   attr(expr, "delimiter") <- switch(sep, "\t" = "tab", "," = "comma", ";" = "semicolon")
   attr(expr, "encoding") <- if (nzchar(file_encoding)) file_encoding else "native/UTF-8"
   expr
+}
+
+
+read_trait_matrix <- function(datapath) {
+  if (is.null(datapath) || !file.exists(datapath)) {
+    stop("请上传 trait matrix：第一列 sample_id，后续列为 trait", call. = FALSE)
+  }
+  
+  raw_head <- readBin(datapath, what = "raw", n = 4096)
+  file_encoding <- ""
+  if (length(raw_head) >= 2 && identical(raw_head[1:2], as.raw(c(0xff, 0xfe)))) {
+    file_encoding <- "UTF-16LE"
+  } else if (length(raw_head) >= 2 && identical(raw_head[1:2], as.raw(c(0xfe, 0xff)))) {
+    file_encoding <- "UTF-16BE"
+  } else if (length(raw_head) >= 3 && identical(raw_head[1:3], as.raw(c(0xef, 0xbb, 0xbf)))) {
+    file_encoding <- "UTF-8-BOM"
+  } else if (length(raw_head) >= 20 && mean(raw_head[seq(2, length(raw_head), by = 2)] == as.raw(0)) > 0.25) {
+    file_encoding <- "UTF-16LE"
+  } else if (length(raw_head) >= 20 && mean(raw_head[seq(1, length(raw_head), by = 2)] == as.raw(0)) > 0.25) {
+    file_encoding <- "UTF-16BE"
+  }
+  
+  preview_con <- if (nzchar(file_encoding)) file(datapath, open = "r", encoding = file_encoding) else file(datapath, open = "r")
+  on.exit(close(preview_con), add = TRUE)
+  preview_lines <- readLines(preview_con, n = 20, warn = FALSE)
+  preview_lines <- preview_lines[nzchar(trimws(preview_lines))]
+  if (length(preview_lines) == 0) {
+    stop("请上传 trait matrix：第一列 sample_id，后续列为 trait", call. = FALSE)
+  }
+  
+  count_delimiter <- function(x, delimiter) {
+    matches <- gregexpr(delimiter, x, fixed = TRUE)[[1]]
+    if (length(matches) == 1 && matches[1] == -1L) 0L else length(matches)
+  }
+  delimiter_counts <- c(
+    tab = count_delimiter(preview_lines[1], "\t"),
+    comma = count_delimiter(preview_lines[1], ","),
+    semicolon = count_delimiter(preview_lines[1], ";")
+  )
+  if (max(delimiter_counts) == 0) {
+    stop("请上传 trait matrix：第一列 sample_id，后续列为 trait", call. = FALSE)
+  }
+  sep <- switch(names(which.max(delimiter_counts)), tab = "\t", comma = ",", semicolon = ";")
+  
+  trait <- tryCatch(
+    read.table(
+      file = datapath,
+      sep = sep,
+      header = TRUE,
+      stringsAsFactors = FALSE,
+      check.names = FALSE,
+      quote = "\"",
+      comment.char = "",
+      fileEncoding = file_encoding
+    ),
+    error = function(e) {
+      stop(paste("Failed to read the trait matrix:", conditionMessage(e)), call. = FALSE)
+    }
+  )
+  
+  clean_bom <- function(x) sub("^ï»¿", "", sub("^﻿", "", x))
+  names(trait) <- clean_bom(trimws(names(trait)))
+  
+  if (ncol(trait) < 2) {
+    stop("请上传 trait matrix：第一列 sample_id，后续列为 trait", call. = FALSE)
+  }
+  
+  trait[[1]] <- clean_bom(trimws(as.character(trait[[1]])))
+  for (col in seq.int(2, ncol(trait))) {
+    trait[[col]] <- trimws(as.character(trait[[col]]))
+    trait[[col]][trait[[col]] == ""] <- NA
+    trait[[col]] <- suppressWarnings(as.numeric(trait[[col]]))
+  }
+  
+  attr(trait, "delimiter") <- switch(sep, "\t" = "tab", "," = "comma", ";" = "semicolon")
+  attr(trait, "encoding") <- if (nzchar(file_encoding)) file_encoding else "native/UTF-8"
+  trait
 }
 
 expression_matrix_error_message <- function(err) {
@@ -557,9 +634,10 @@ ui <- shinyUI(
                        width = 2,
                        fileInput(
                          inputId = "traitData",
-                         label = "Upload expression matrix",
-                         accept = c(".txt",".csv",".xls")
+                         label = "Upload trait matrix",
+                         accept = c(".txt", ".csv", ".tsv", ".xls")
                        ),
+                       helpText("Trait matrix: the first column must be the sample ID; all following columns must be numeric traits."),
                        colourpicker::colourInput(inputId = "colormin",
                                                  label = "Minimum",
                                                  value = "blue"),
@@ -1135,23 +1213,29 @@ server <- function(input, output, session){
   phen <- reactive({
     file2 <- input$traitData
     if(is.null(file2)){return()}
-    read.csv(file = file2$datapath,
-             sep=",",
-             header = T,
-             stringsAsFactors = F)
+    trait <- read_trait_matrix(file2$datapath)
+    validate(need(ncol(trait) >= 2, "请上传 trait matrix：第一列 sample_id，后续列为 trait"))
+    trait
   })
   
   
   observeEvent(
     input$starttrait,
     {
-      if(is.null(phen())){return()}
+      trait_data <- tryCatch(
+        phen(),
+        error = function(e) {
+          showNotification(conditionMessage(e), type = "error")
+          NULL
+        }
+      )
+      if(is.null(trait_data)){return()}
       if(is.null(exp.ds$table2)){return()}
       if(is.null(exp.ds$MEs_col)){return()}
       if(is.null(exp.ds$nSamples)){return()}
       if(is.null(exp.ds$moduleColors)){return()}
-      if (ncol(phen()) == 2) {
-        x <- phen()
+      if (ncol(trait_data) == 2) {
+        x <- trait_data
         Tcol = as.character(unique(x[,2]))
         b <- list()
         for (i in 1:length(Tcol)) {
@@ -1162,11 +1246,11 @@ server <- function(input, output, session){
         c <- data.frame(row.names = x$name,
                         c)
         colnames(c) = Tcol
-        rownames(c) = phen()[,1]
+        rownames(c) = trait_data[,1]
         exp.ds$phen<- c
       } else {
-        exp.ds$phen = data.frame(row.names = phen()[,1],
-                                 phen()[,-1])
+        exp.ds$phen = data.frame(row.names = trait_data[,1],
+                                 trait_data[,-1])
       }
       exp.ds$phen =  exp.ds$phen[match(rownames(exp.ds$table2),rownames(exp.ds$phen)),]
       exp.ds$traitout = getMt(phenotype = exp.ds$phen,MEs_col = exp.ds$MEs_col,
