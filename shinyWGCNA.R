@@ -141,25 +141,25 @@ ui <- shinyUI(
                        fileInput(
                          inputId = "ExpMat",
                          label = "Upload expression matrix",
-                         accept = c(".txt", ".tsv", ".tab", ".csv", ".xls")
+                         accept = c(".txt",".csv",".xls")
                        ),
-                       p("accept Tab-delimited .txt/.tsv/.tab/.xls files and comma-separated .csv files",
+                       p("only accecpt Tab-delimited .txt, .csv and .xls file",
                          style = "color: #7a8788;font-size: 12px; font-style:Italic"),
                        radioButtons(
                          inputId = "format",
                          label = "Format",
-                         choices = c("count", "FPKM/TPM" = "FPKM"),
+                         choices = c("count","FPKM"),
                          selected = "FPKM"
                        ),
-                       p("Normalized expression input includes FPKM, TPM, RPKM, CPM and other already-normalized expression values",
+                       p("Normalized included: FPKM, RPKM, CPM and other method",
                          style = "color: #7a8788;font-size: 12px; font-style:Italic"),
                        selectInput(
                          inputId = "method1",
                          label = "Normalized method",
                          choices = c(VST = "varianceStabilizingTransformation",
                                      lgCPM = "lgcpm",
-                                     FPKM_TPM = "rawFPKM",
-                                     logFPKM_TPM = "lgFPKM"),
+                                     FPKM = "rawFPKM",
+                                     lgFPKM = "lgFPKM"),
                          selected = "rawFPKM"
                        ),
                        HTML('<font color = #FF6347  size = 3.2><b>First Time filter</b></font>'),
@@ -171,9 +171,9 @@ ui <- shinyUI(
                        textInput(
                          inputId = "RCcut",
                          label = "Expression Cutoff",
-                         value = "1"
+                         value = "10"
                        ),
-                       p("Noise removal: for count data, for example, remove features with count less than 10 in more than 90% of samples; for FPKM/TPM, use expression cutoff 1 by default.",
+                       p("Noise removal, for example, removing all features that have a count of less than say 10 in more than 90% of the samples",
                          style = "color: #7a8788;font-size: 12px; font-style:Italic"),
                        br(),
                        HTML('<font color = #FF6347 size = 3.2><b>Second Time filter</b></font>'),
@@ -208,20 +208,6 @@ ui <- shinyUI(
                        tabPanel(title = "Preview of Input",height = "500px",width = "100%",
                                 icon = icon("table"),
                                 DT::dataTableOutput("Inputbl"),
-                       ),
-                       tabPanel(title = "Cleaned genes",height = "500px",width = "100%",
-                                icon = icon("recycle"),
-                                p("Search and select genes removed by cleaning, then add them back to the Input gene table.",
-                                  style = "color: #7a8788;font-size: 12px; font-style:Italic"),
-                                DT::dataTableOutput("washedGenes"),
-                                actionButton("addWashedGenes", "Add selected cleaned genes to Input"),
-                                htmlOutput("addWashedGenesInfo")
-                       ),
-                       tabPanel(title = "Final analysis input",height = "500px",width = "100%",
-                                icon = icon("table"),
-                                p("Final expression matrix used by downstream SFT and network construction after cleaning and any add-back selections.",
-                                  style = "color: #7a8788;font-size: 12px; font-style:Italic"),
-                                DT::dataTableOutput("finalAnalysisInput")
                        ),
                        tabPanel(title = "SampleCluster",height = "500px",width = "100%",
                                 icon = icon("tree"),
@@ -629,106 +615,6 @@ ui <- shinyUI(
   )## navbarPage
 )## UI
 
-readExpressionMatrix <- function(upload) {
-  ext <- tolower(tools::file_ext(upload$name))
-  first_lines <- readLines(upload$datapath, n = 10, warn = FALSE, encoding = "UTF-8")
-  first_lines <- sub("^\\ufeff", "", first_lines)
-  first_line <- first_lines[nzchar(first_lines)][1]
-  if(is.na(first_line)) {
-    first_line <- ""
-  }
-  countDelimiter <- function(delimiter) {
-    matches <- gregexpr(delimiter, first_line, fixed = TRUE)[[1]]
-    if(identical(matches, -1L)) {
-      return(0)
-    }
-    length(matches)
-  }
-  sep <- if(ext == "csv") {
-    ","
-  } else if(ext %in% c("txt", "tsv", "tab", "xls")) {
-    "\t"
-  } else if(countDelimiter("\t") >= countDelimiter(",")) {
-    "\t"
-  } else {
-    ","
-  }
-
-  encodings <- c("UTF-8-BOM", "UTF-8", "GB18030", "")
-  last_error <- NULL
-  for(file_encoding in encodings) {
-    read_args <- list(file = upload$datapath,
-                      sep = sep,
-                      header = TRUE,
-                      stringsAsFactors = FALSE,
-                      check.names = FALSE,
-                      quote = "\"",
-                      comment.char = "",
-                      na.strings = c("NA", "", "NaN"))
-    if(nzchar(file_encoding)) {
-      read_args$fileEncoding <- file_encoding
-    }
-    table <- tryCatch(do.call(read.table, read_args),
-                      error = function(e) {
-                        last_error <<- e
-                        NULL
-                      })
-    if(!is.null(table)) {
-      stripUtf8BomAndWhitespace <- function(x) {
-        utf8_bom <- rawToChar(as.raw(c(0xEF, 0xBB, 0xBF)))
-        trimws(gsub(utf8_bom, "", x, fixed = TRUE))
-      }
-      expression_format_message <- paste(
-        "Expected expression matrix format: the first column must contain unique, non-empty gene IDs",
-        "and every remaining column must contain numeric sample expression values."
-      )
-      names(table) <- stripUtf8BomAndWhitespace(names(table))
-      if(ncol(table) > 0 && (is.character(table[[1]]) || is.factor(table[[1]]))) {
-        table[[1]] <- stripUtf8BomAndWhitespace(as.character(table[[1]]))
-      }
-
-      first_column_is_gene_id <- ncol(table) > 1 &&
-        (is.character(table[[1]]) || is.factor(table[[1]]))
-
-      if(first_column_is_gene_id) {
-        gene_ids <- table[[1]]
-        if(any(is.na(gene_ids) | !nzchar(gene_ids))) {
-          stop(paste(
-            "Gene ID column contains empty or missing gene IDs.",
-            expression_format_message
-          ), call. = FALSE)
-        }
-        duplicated_gene_ids <- unique(gene_ids[duplicated(gene_ids)])
-        if(length(duplicated_gene_ids) > 0) {
-          stop(paste(
-            "Gene ID column contains duplicate gene IDs:",
-            paste(utils::head(duplicated_gene_ids, 5), collapse = ", "),
-            "Please make gene IDs unique before uploading.",
-            expression_format_message
-          ), call. = FALSE)
-        }
-      }
-
-      expression_column_names <- names(table)[-1]
-      for(column_name in expression_column_names) {
-        original_column <- table[[column_name]]
-        converted_column <- suppressWarnings(as.numeric(as.character(original_column)))
-        if(any(is.na(converted_column) & !is.na(original_column))) {
-          stop(paste(
-            "Expression column", shQuote(column_name),
-            "contains non-numeric expression values. Please check the non-numeric expression values and upload again.",
-            expression_format_message
-          ), call. = FALSE)
-        }
-        table[[column_name]] <- converted_column
-      }
-      rownames(table) <- NULL
-      return(table)
-    }
-  }
-  stop(last_error)
-}
-
 server <- function(input, output, session){
   observeEvent(input$toggleSidebar, {
     shinyjs::toggle(id = "Sidebar")
@@ -751,25 +637,22 @@ server <- function(input, output, session){
   data <- reactive({
     file1 <- input$ExpMat
     if(is.null(file1)){return()}
-    readExpressionMatrix(file1)
+    read.delim(file = file1$datapath,
+               sep="\t",
+               header = T,
+               stringsAsFactors = F)
   })
 
   output$Inputcheck = renderUI({
     if(is.null(data())){return()}
-    if(ncol(data()) < 2) {
-      HTML(
-        '<font color = blue><b>Sorry!</b></font>
-       Your expression matrix has fewer than 2 sample columns after reading. Expected format: first column is gene IDs; all remaining columns are numeric sample expression values. Please check whether the file delimiter is correct and upload a gene-by-sample table again.
-       '
-      )
-    } else if(length(which(is.na(data()))) == 0) {
+    if(length(which(is.na(data()))) == 0) {
       HTML('<font color = red><b>
-          Congratulations!,</b></font> There is no problem with your expression matrix format. Expected format confirmed: first column contains gene IDs and the remaining columns contain numeric sample expression values. Please proceed to the next step
+          Congratulations!,</b></font> There is no problem with your expression matrix format, please proceed to the next step
           ')
     } else {
       HTML(
         '<font color = blue><b>Sorry!</b></font>
-       Your expression matrix has blank (NA) expression values or rows,<font color = blue> Please double check that the first column contains gene IDs and every remaining column contains numeric sample expression values, then manually remove blanks and upload the file again</font>
+       Your expression matrix has blank (NA) values or blank (NA) rows,<font color = blue> Please double check and manually remove the blanks or rows and upload file again</font>
        '
       )
     }
@@ -805,8 +688,8 @@ server <- function(input, output, session){
                                                        logCPM = "lgcpm"))
       updateTextInput(session,"RCcut",value = 10)
     } else if(fmt() == "FPKM") {
-      updateSelectInput(session, "method1",choices = c(FPKM_TPM = "rawFPKM",
-                                                       logFPKM_TPM = "lgFPKM"))
+      updateSelectInput(session, "method1",choices = c(FPKM = "rawFPKM",
+                                                       logFPKM = "lgFPKM"))
       updateTextInput(session,"RCcut",value = 1)
     }
 
@@ -831,257 +714,59 @@ server <- function(input, output, session){
   exp.ds<-reactiveValues(data=NULL)
   downloads <- reactiveValues(data = NULL)
 
-  downstreamAnalysisStateNames <- function() {
-    c(
-      "sft", "cksft", "power", "netout", "net", "moduleLabels",
-      "moduleColors", "MEs_col", "MEs", "Gene2module", "nSamples",
-      "tomDiss", "tomGeneTree", "phen", "traitout", "modTraitCor",
-      "modTraitP", "textMatrix", "KME", "GSout", "MM", "MMP",
-      "Heatmap", "hub.all", "cyt", "sml", "st", "hubml", "hubt",
-      "kMEcut", "GScut", "threshold", "xangle", "c_min", "c_mid",
-      "c_max", "mod_color", "mod_color_anno", "Left_anno"
-    )
-  }
-
-  clearDownstreamAnalysisState <- function(exp.ds) {
-    # Any change to exp.ds$table2 invalidates soft-threshold, network,
-    # module-trait, hub-gene, and Cytoscape outputs. Keep this helper shared
-    # by Update information and add-washed-genes so stale state is cleared
-    # consistently.
-    for(downstream_name in downstreamAnalysisStateNames()) {
-      exp.ds[[downstream_name]] <- NULL
-    }
-    invisible(exp.ds)
-  }
-
-  hasDownstreamValue <- function(value) {
-    !is.null(value) && length(value) > 0
-  }
-
   observeEvent(
     input$action1,
     {
       if(is.null(data())){return()}
-      if(ncol(data()) < 2) {return()}
       if(length(which(is.na(data()))) != 0) {return()}
-      clearDownstreamAnalysisState(exp.ds)
       exp.ds$table = data.frame()
       exp.ds$table2 = data.frame()
       exp.ds$param = list()
       exp.ds$layout = as.character(input$treelayout)
-      exp.ds$first_filter_gene_count = 0
-      exp.ds$second_filter_gene_count = 0
-      exp.ds$added_back_gene_count = 0
 
       output$filter1 = renderUI({
         input$action1
         p_mass = c("Processing step1, remove very low expressed genes",
                    paste("Processing step2, pick out high variation genes via",cutmethod()))
-        filter_message <- withProgress(
+        withProgress(
           message = "Raw data normlization",
           value = 0,{
-            incProgress(1/2,detail = p_mass[1])
-            exp.ds$table = getdatExpr(rawdata = data(),
-                                      RcCutoff = rccutoff(),samplePerc = sampP(),
-                                      datatype = fmt(),method = mtd())
-            Sys.sleep(0.1)
-            if(is.null(exp.ds$table) || nrow(exp.ds$table) == 0 || ncol(exp.ds$table) == 0) {
-              exp.ds$table2 = data.frame()
-              HTML(paste0('<font color = blue><b>No genes remain after the first filter.</b></font><br/>',
-                          'For FPKM/TPM input, please use a smaller Expression Cutoff (default 1) or lower the Sample percentage.'))
-            } else {
-              exp.ds$first_filter_gene_count <- nrow(exp.ds$table)
-              reserved_gene_num <- min(GNC(), exp.ds$first_filter_gene_count)
-              # getdatExpr keeps first-filtered genes in rows, matching the original
-              # ShinyWGCNA workflow. GeneNumCut is therefore calculated from the
-              # gene-row count; getdatExpr2 returns the WGCNA-ready samples x genes
-              # matrix used downstream.
-              gene_num_cut <- 1 - reserved_gene_num/exp.ds$first_filter_gene_count
-              incProgress(1/2,detail = p_mass[2])
-              exp.ds$table2 = getdatExpr2(datExpr = exp.ds$table,
-                                          GeneNumCut = gene_num_cut,cutmethod = cutmethod())
-              if(is.null(exp.ds$table2) || nrow(exp.ds$table2) == 0 || ncol(exp.ds$table2) == 0) {
-                HTML('<font color = blue><b>No genes remain after the second filter.</b></font> Please reduce the Reserved genes Num. or adjust the filter settings.')
-              } else {
-                exp.ds$second_filter_gene_count <- ncol(exp.ds$table2)
+            for (i in 1:2) {
+             incProgress(1/2,detail = p_mass[i])
+            # 放一个彩蛋 incProgress(1/2,detail = c("找不到对象，找不到对象，找不到「对象」汪汪！>_< ~~","终于找到了 o_O ~~")[i])
+              if(i == 1) {
+                exp.ds$table = getdatExpr(rawdata = data(),
+                                          RcCutoff = rccutoff(),samplePerc = sampP(),
+                                          datatype = fmt(),method = mtd())
+              } else if (i == 2){
+                exp.ds$table2 = getdatExpr2(datExpr = exp.ds$table,
+                                            GeneNumCut = 1-GNC()/nrow(exp.ds$table),cutmethod = cutmethod())
                 exp.ds$param = getsampleTree(exp.ds$table2,layout = exp.ds$layout)
-                Sys.sleep(0.1)
-                NULL
               }
+              Sys.sleep(0.1)
             }
           }
         )
-        if(!is.null(filter_message)) {
-          return(filter_message)
-        }
-        isolate({
-          first_filter_gene_count <- exp.ds$first_filter_gene_count
-          second_filter_gene_count <- exp.ds$second_filter_gene_count
-          reserved_gene_num <- min(GNC(), first_filter_gene_count)
-          HTML(paste0('<font color = red> <b>After filtered by conditions:</b> </font>removing all features with expression/count less than <font color = red><b>',rccutoff(),'</b></font> in more than <font color = red> <b>',100*sampP(),'% </b></font> of the samples','<br/>',
-                      '<font color = red> <b>Remaining Gene Numbers: </b> </font>',first_filter_gene_count,'<br/>',
-                      '<font color = red> <b>After filtered by conditions:</b> </font>Genes with <font color = red><b>',cutmethod(),'</b></font> ranked top <font color = red> <b>',reserved_gene_num,' </b></font> of all expressed genes','<br/>',
-                      '<font color = red> <b>Remaining Gene Numbers: </b> </font>',second_filter_gene_count))
-        })
+        isolate(HTML(paste0('<font color = red> <b>After filtered by conditions:</b> </font>removing all features that have a count of less than say <font color = red><b>',rccutoff(),'</b></font> in more than <font color = red> <b>',100*sampP(),'% </b></font> of the samples','<br/>',
+                            '<font color = red> <b>Remaining Gene Numbers: </b> </font>',nrow(exp.ds$table),'<br/>',
+                            '<font color = red> <b>After filtered by conditions:</b> </font>Genes with <font color = red><b>',cutmethod(),'</b></font> ranked top <font color = red> <b>',GNC(),' </b></font> of all expressed genes','<br/>',
+                            '<font color = red> <b>Remaining Gene Numbers: </b> </font>',ncol(exp.ds$table2))))
       })
     }
   )
 
 
   ## summary num
-  firstFilterGeneIds <- reactive({
-    if(is.null(exp.ds$table)){return(character(0))}
-    if(is.null(exp.ds$table2)){return(character(0))}
-    rownames(exp.ds$table)
-  })
-
-  cleanedGeneIds <- reactive({
-    if(is.null(exp.ds$table)){return(character(0))}
-    if(is.null(exp.ds$table2)){return(character(0))}
-    setdiff(firstFilterGeneIds(), colnames(exp.ds$table2))
-  })
-
-  cleanedGeneExpression <- function(gene_ids) {
-    if(length(gene_ids) == 0){return(data.frame())}
-    if(all(gene_ids %in% rownames(exp.ds$table))) {
-      exp.ds$table[gene_ids, , drop = FALSE]
-    } else {
-      as.data.frame(t(exp.ds$table[, gene_ids, drop = FALSE]))
-    }
-  }
-
-  cleanedGenesForInput <- function(gene_ids) {
-    if(length(gene_ids) == 0){return(data.frame())}
-    if(all(gene_ids %in% rownames(exp.ds$table))) {
-      add_back <- as.data.frame(t(exp.ds$table[gene_ids, , drop = FALSE]))
-      colnames(add_back) <- gene_ids
-      add_back
-    } else {
-      exp.ds$table[, gene_ids, drop = FALSE]
-    }
-  }
-  hasNonEmptyDimensions <- function(input_data) {
-    !is.null(input_data) && length(dim(input_data)) == 2 && all(dim(input_data) > 0)
-  }
-
-  inputPreviewSummary <- function(input_data) {
-    first_column_name <- if(ncol(input_data) > 0) colnames(input_data)[1] else "None"
-    first_column_unique <- if(ncol(input_data) > 0) length(unique(input_data[[1]])) else 0
-    na_count <- sum(is.na(input_data))
-    paste0(
-      "Raw read dimensions: ", nrow(input_data), " x ", ncol(input_data),
-      " | First column: ", first_column_name,
-      " | Unique first-column IDs: ", first_column_unique,
-      " | NA values: ", na_count
-    )
-  }
-
-  finalAnalysisInputSummary <- function(final_input) {
-    first_filter_gene_count <- if(is.null(exp.ds$first_filter_gene_count)) 0 else exp.ds$first_filter_gene_count
-    second_filter_gene_count <- if(is.null(exp.ds$second_filter_gene_count)) 0 else exp.ds$second_filter_gene_count
-    added_back_gene_count <- if(is.null(exp.ds$added_back_gene_count)) 0 else exp.ds$added_back_gene_count
-    paste0(
-      "First-round remaining genes: ", first_filter_gene_count,
-      " | Second-round retained genes: ", second_filter_gene_count,
-      " | User added-back genes: ", added_back_gene_count,
-      " | Final analysis samples: ", nrow(final_input),
-      " | Final analysis genes: ", ncol(final_input)
-    )
-  }
-
   output$Inputbl = DT::renderDataTable({
-    input_data <- data()
-    if(is.null(input_data)){return()}
-
-    raw_preview <- head(input_data, 10)
-    DT::datatable(
-      raw_preview,
-      caption = htmltools::tags$caption(style = "caption-side: top; text-align: left;", inputPreviewSummary(input_data)),
-      options = list(pageLength = 10, scrollX = TRUE)
-    )
-  })
-
-  output$washedGenes = DT::renderDataTable({
     if(is.null(data())){return()}
     if(length(which(is.na(data()))) != 0) {return()}
-    washed_ids <- cleanedGeneIds()
-    if(length(washed_ids) == 0){
-      return(data.frame(gene_id = character(0)))
-    }
-    washed_data <- as.data.frame(cleanedGeneExpression(washed_ids))
-    washed_data <- cbind(gene_id = rownames(washed_data), washed_data)
-    rownames(washed_data) <- NULL
-    DT::datatable(
-      washed_data,
-      selection = list(mode = "multiple", target = "row"),
-      filter = "top",
-      options = list(pageLength = 10, scrollX = TRUE)
-    )
-  })
-
-  output$finalAnalysisInput = DT::renderDataTable({
-    if(!hasNonEmptyDimensions(exp.ds$table2)){
-      return(data.frame(gene_id = character(0)))
-    }
-    final_input <- as.data.frame(t(exp.ds$table2))
-    final_analysis_message <- finalAnalysisInputSummary(exp.ds$table2)
-    final_input <- cbind(gene_id = rownames(final_input), final_input)
-    rownames(final_input) <- NULL
-    DT::datatable(
-      final_input,
-      caption = htmltools::tags$caption(style = "caption-side: top; text-align: left;", final_analysis_message),
-      filter = "top",
-      options = list(pageLength = 10, scrollX = TRUE)
-    )
-  })
-
-  observeEvent(input$addWashedGenes, {
-    if(is.null(exp.ds$table)){return()}
-    if(is.null(exp.ds$table2)){return()}
-    selected_rows <- input$washedGenes_rows_selected
-    if(length(selected_rows) == 0){
-      output$addWashedGenesInfo <- renderUI({
-        HTML('<font color = blue><b>No cleaned genes selected.</b></font>')
-      })
-      return()
-    }
-    washed_ids <- cleanedGeneIds()
-    selected_genes <- washed_ids[selected_rows]
-    selected_genes <- selected_genes[!is.na(selected_genes)]
-    selected_genes <- setdiff(selected_genes, colnames(exp.ds$table2))
-    if(length(selected_genes) == 0){
-      output$addWashedGenesInfo <- renderUI({
-        HTML('<font color = blue><b>Selected genes are already in Input.</b></font>')
-      })
-      return()
-    }
-    exp.ds$table2 <- cbind(exp.ds$table2, cleanedGenesForInput(selected_genes))
-    exp.ds$added_back_gene_count <- if(is.null(exp.ds$added_back_gene_count)) {
-      length(selected_genes)
-    } else {
-      exp.ds$added_back_gene_count + length(selected_genes)
-    }
-    exp.ds$param <- getsampleTree(exp.ds$table2, layout = exp.ds$layout)
-    # Reusing the Update information cleanup keeps every object derived from
-    # the old table2/power/network from leaking into the new analysis input.
-    clearDownstreamAnalysisState(exp.ds)
-    output$addWashedGenesInfo <- renderUI({
-      HTML(paste0('<font color = red><b>', length(selected_genes), '</b></font> cleaned genes were added back to Input. The final analysis matrix below now includes the added-back genes. Please rerun downstream WGCNA analyses.'))
-    })
+    as.data.frame(t(exp.ds$table2))
   })
   ## sample tree
   output$clustPlot = renderPlot({
     if(is.null(data())){return()}
     if(length(which(is.na(data()))) != 0) {return()}
-    validate(
-      need(!is.null(exp.ds$table2) &&
-             length(dim(exp.ds$table2)) == 2 &&
-             nrow(exp.ds$table2) > 0 &&
-             ncol(exp.ds$table2) > 0,
-           "请先成功完成 Update information / filtering"),
-      need(!is.null(exp.ds$param$sampleTree),
-           "请先成功完成 Update information / filtering")
-    )
+    if(is.null(exp.ds$table2)){return()}
     plot(exp.ds$param$sampleTree,main = "Sample clustering to detect outlier", sub = "", xlab = "")
   })
   ## download sample tree
