@@ -1040,7 +1040,15 @@ server <- function(input, output, session){
   output$clustPlot = renderPlot({
     if(is.null(data())){return()}
     if(length(which(is.na(data()))) != 0) {return()}
-    if(is.null(exp.ds$table2)){return()}
+    validate(
+      need(!is.null(exp.ds$table2) &&
+             length(dim(exp.ds$table2)) == 2 &&
+             nrow(exp.ds$table2) > 0 &&
+             ncol(exp.ds$table2) > 0,
+           "请先成功完成 Update information / filtering"),
+      need(!is.null(exp.ds$param$sampleTree),
+           "请先成功完成 Update information / filtering")
+    )
     plot(exp.ds$param$sampleTree,main = "Sample clustering to detect outlier", sub = "", xlab = "")
   })
   ## download sample tree
@@ -1523,6 +1531,10 @@ server <- function(input, output, session){
       "01.SampleCluster.nwk"
     },
     content = function(file) {
+      validate(
+        need(!is.null(exp.ds$param$tree),
+             "请先成功完成 Update information / filtering")
+      )
       write.tree(phy = exp.ds$param$tree,file = file)
     }
   )
