@@ -143,7 +143,7 @@ ui <- shinyUI(
                          label = "Upload expression matrix",
                          accept = c(".txt",".csv",".xls")
                        ),
-                       p("only accecpt Tab-delimited .txt, .csv and .xls file",
+                       p("accept Tab-delimited .txt/.xls files and comma-separated .csv files",
                          style = "color: #7a8788;font-size: 12px; font-style:Italic"),
                        radioButtons(
                          inputId = "format",
@@ -171,9 +171,9 @@ ui <- shinyUI(
                        textInput(
                          inputId = "RCcut",
                          label = "Expression Cutoff",
-                         value = "10"
+                         value = "0.0001"
                        ),
-                       p("Noise removal, for example, removing all features that have a count of less than say 10 in more than 90% of the samples",
+                       p("Noise removal: for count data, for example, remove features with count less than 10 in more than 90% of samples; for FPKM/TPM, use a small expression cutoff such as 0.0001 by default.",
                          style = "color: #7a8788;font-size: 12px; font-style:Italic"),
                        br(),
                        HTML('<font color = #FF6347 size = 3.2><b>Second Time filter</b></font>'),
@@ -645,15 +645,24 @@ server <- function(input, output, session){
   data <- reactive({
     file1 <- input$ExpMat
     if(is.null(file1)){return()}
-    read.delim(file = file1$datapath,
-               sep="\t",
+    first_line <- readLines(file1$datapath, n = 1, warn = FALSE)
+    sep <- ifelse(grepl(",", first_line) & !grepl("\t", first_line), ",", "\t")
+    read.table(file = file1$datapath,
+               sep = sep,
                header = T,
-               stringsAsFactors = F)
+               stringsAsFactors = F,
+               check.names = FALSE)
   })
 
   output$Inputcheck = renderUI({
     if(is.null(data())){return()}
-    if(length(which(is.na(data()))) == 0) {
+    if(ncol(data()) < 2) {
+      HTML(
+        '<font color = blue><b>Sorry!</b></font>
+       Your expression matrix has fewer than 2 columns. Please check whether the file delimiter is correct and upload a gene-by-sample table again.
+       '
+      )
+    } else if(length(which(is.na(data()))) == 0) {
       HTML('<font color = red><b>
           Congratulations!,</b></font> There is no problem with your expression matrix format, please proceed to the next step
           ')
@@ -698,7 +707,7 @@ server <- function(input, output, session){
     } else if(fmt() == "FPKM") {
       updateSelectInput(session, "method1",choices = c(FPKM_TPM = "rawFPKM",
                                                        logFPKM_TPM = "lgFPKM"))
-      updateTextInput(session,"RCcut",value = 1)
+      updateTextInput(session,"RCcut",value = 0.0001)
     }
 
   })
@@ -725,6 +734,7 @@ server <- function(input, output, session){
     input$action1,
     {
       if(is.null(data())){return()}
+      if(ncol(data()) < 2) {return()}
       if(length(which(is.na(data()))) != 0) {return()}
       exp.ds$table = data.frame()
       exp.ds$table2 = data.frame()
@@ -738,25 +748,31 @@ server <- function(input, output, session){
         withProgress(
           message = "Raw data normlization",
           value = 0,{
-            for (i in 1:2) {
-             incProgress(1/2,detail = p_mass[i])
-            # 放一个彩蛋 incProgress(1/2,detail = c("找不到对象，找不到对象，找不到「对象」汪汪！>_< ~~","终于找到了 o_O ~~")[i])
-              if(i == 1) {
-                exp.ds$table = getdatExpr(rawdata = data(),
-                                          RcCutoff = rccutoff(),samplePerc = sampP(),
-                                          datatype = fmt(),method = mtd())
-              } else if (i == 2){
-                exp.ds$table2 = getdatExpr2(datExpr = exp.ds$table,
-                                            GeneNumCut = 1-GNC()/nrow(exp.ds$table),cutmethod = cutmethod())
-                exp.ds$param = getsampleTree(exp.ds$table2,layout = exp.ds$layout)
-              }
-              Sys.sleep(0.1)
+            incProgress(1/2,detail = p_mass[1])
+            exp.ds$table = getdatExpr(rawdata = data(),
+                                      RcCutoff = rccutoff(),samplePerc = sampP(),
+                                      datatype = fmt(),method = mtd())
+            Sys.sleep(0.1)
+            if(is.null(exp.ds$table) || nrow(exp.ds$table) == 0 || ncol(exp.ds$table) == 0) {
+              exp.ds$table2 = data.frame()
+              return(HTML(paste0('<font color = blue><b>No genes remain after the first filter.</b></font><br/>',
+                                 'For FPKM/TPM input, please use a smaller Expression Cutoff (default 0.0001) or lower the Sample percentage.')))
             }
+            reserved_gene_num <- min(GNC(), nrow(exp.ds$table))
+            gene_num_cut <- 1 - reserved_gene_num/nrow(exp.ds$table)
+            incProgress(1/2,detail = p_mass[2])
+            exp.ds$table2 = getdatExpr2(datExpr = exp.ds$table,
+                                        GeneNumCut = gene_num_cut,cutmethod = cutmethod())
+            if(is.null(exp.ds$table2) || nrow(exp.ds$table2) == 0 || ncol(exp.ds$table2) == 0) {
+              return(HTML('<font color = blue><b>No genes remain after the second filter.</b></font> Please reduce the Reserved genes Num. or adjust the filter settings.'))
+            }
+            exp.ds$param = getsampleTree(exp.ds$table2,layout = exp.ds$layout)
+            Sys.sleep(0.1)
           }
         )
-        isolate(HTML(paste0('<font color = red> <b>After filtered by conditions:</b> </font>removing all features that have a count of less than say <font color = red><b>',rccutoff(),'</b></font> in more than <font color = red> <b>',100*sampP(),'% </b></font> of the samples','<br/>',
+        isolate(HTML(paste0('<font color = red> <b>After filtered by conditions:</b> </font>removing all features with expression/count less than <font color = red><b>',rccutoff(),'</b></font> in more than <font color = red> <b>',100*sampP(),'% </b></font> of the samples','<br/>',
                             '<font color = red> <b>Remaining Gene Numbers: </b> </font>',nrow(exp.ds$table),'<br/>',
-                            '<font color = red> <b>After filtered by conditions:</b> </font>Genes with <font color = red><b>',cutmethod(),'</b></font> ranked top <font color = red> <b>',GNC(),' </b></font> of all expressed genes','<br/>',
+                            '<font color = red> <b>After filtered by conditions:</b> </font>Genes with <font color = red><b>',cutmethod(),'</b></font> ranked top <font color = red> <b>',min(GNC(), nrow(exp.ds$table)),' </b></font> of all expressed genes','<br/>',
                             '<font color = red> <b>Remaining Gene Numbers: </b> </font>',ncol(exp.ds$table2))))
       })
     }
@@ -764,12 +780,42 @@ server <- function(input, output, session){
 
 
   ## summary num
+  firstFilterGeneIds <- reactive({
+    if(is.null(exp.ds$table)){return(character(0))}
+    if(is.null(exp.ds$table2)){return(character(0))}
+    table_rows <- rownames(exp.ds$table)
+    table_cols <- colnames(exp.ds$table)
+    if(!is.null(table_rows) && length(intersect(table_rows, colnames(exp.ds$table2))) > 0) {
+      return(table_rows)
+    }
+    table_cols
+  })
+
   cleanedGeneIds <- reactive({
     if(is.null(exp.ds$table)){return(character(0))}
     if(is.null(exp.ds$table2)){return(character(0))}
-    setdiff(colnames(exp.ds$table), colnames(exp.ds$table2))
+    setdiff(firstFilterGeneIds(), colnames(exp.ds$table2))
   })
 
+  cleanedGeneExpression <- function(gene_ids) {
+    if(length(gene_ids) == 0){return(data.frame())}
+    if(all(gene_ids %in% rownames(exp.ds$table))) {
+      exp.ds$table[gene_ids, , drop = FALSE]
+    } else {
+      as.data.frame(t(exp.ds$table[, gene_ids, drop = FALSE]))
+    }
+  }
+
+  cleanedGenesForInput <- function(gene_ids) {
+    if(length(gene_ids) == 0){return(data.frame())}
+    if(all(gene_ids %in% rownames(exp.ds$table))) {
+      add_back <- as.data.frame(t(exp.ds$table[gene_ids, , drop = FALSE]))
+      colnames(add_back) <- gene_ids
+      add_back
+    } else {
+      exp.ds$table[, gene_ids, drop = FALSE]
+    }
+  }
   output$Inputbl = DT::renderDataTable({
     if(is.null(data())){return()}
     if(length(which(is.na(data()))) != 0) {return()}
@@ -783,7 +829,7 @@ server <- function(input, output, session){
     if(length(washed_ids) == 0){
       return(data.frame(gene_id = character(0)))
     }
-    washed_data <- as.data.frame(t(exp.ds$table[, washed_ids, drop = FALSE]))
+    washed_data <- as.data.frame(cleanedGeneExpression(washed_ids))
     washed_data <- cbind(gene_id = rownames(washed_data), washed_data)
     rownames(washed_data) <- NULL
     DT::datatable(
@@ -814,7 +860,7 @@ server <- function(input, output, session){
       })
       return()
     }
-    exp.ds$table2 <- cbind(exp.ds$table2, exp.ds$table[, selected_genes, drop = FALSE])
+    exp.ds$table2 <- cbind(exp.ds$table2, cleanedGenesForInput(selected_genes))
     exp.ds$param <- getsampleTree(exp.ds$table2, layout = exp.ds$layout)
     exp.ds$sft <- NULL
     exp.ds$power <- NULL
