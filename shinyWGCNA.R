@@ -86,6 +86,10 @@ ensure_dplyr_select <- function() {
   invisible(dplyr::select)
 }
 
+tomplot_light_palette <- function(n = 100) {
+  heat.colors(n)
+}
+
 options(shiny.maxRequestSize = 300*1024^2)
 options(scipen = 6)
 select <- dplyr::select
@@ -1370,7 +1374,9 @@ server <- function(input, output, session){
     if(is.null(exp.ds$tomDiss)){return()}
     if(is.null(exp.ds$tomGeneTree)){return()}
     plotTOM <- exp.ds$tomDiss^7
-    TOMplot(plotTOM, exp.ds$tomGeneTree, exp.ds$moduleColors, main = "Network heatmap plot, all genes")
+    TOMplot(plotTOM, exp.ds$tomGeneTree, exp.ds$moduleColors,
+            main = "Network heatmap plot, all genes",
+            col = tomplot_light_palette(100))
   })
   
   output$g2m = DT::renderDataTable({
@@ -1919,7 +1925,9 @@ server <- function(input, output, session){
                     "请先重新完成 TOMplot analysis"))
       pdf(file = file,width = downloads$width9, height = downloads$height9)
       plotTOM <- exp.ds$tomDiss^7
-      TOMplot(plotTOM, exp.ds$tomGeneTree, exp.ds$moduleColors, main = "Network heatmap plot, all genes")
+      TOMplot(plotTOM, exp.ds$tomGeneTree, exp.ds$moduleColors,
+              main = "Network heatmap plot, all genes",
+              col = tomplot_light_palette(100))
       dev.off()
     }
   )
