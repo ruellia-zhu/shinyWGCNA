@@ -69,9 +69,28 @@ suppressMessages(library(tidyverse))
 suppressMessages(library(shinyjqui))
 suppressMessages(library(ggpubr))
 suppressMessages(library(dplyr))
+ensure_dplyr_select <- function() {
+  assign("select", dplyr::select, envir = .GlobalEnv)
+
+  if ("ShinyWGCNA" %in% loadedNamespaces()) {
+    shiny_wgcna_ns <- asNamespace("ShinyWGCNA")
+    hubgenes_uses_select <- exists("hubgenes", envir = shiny_wgcna_ns, inherits = FALSE) &&
+      any(grepl("(^|[^:[:alnum:]_.])select\\s*\\(",
+                deparse(get("hubgenes", envir = shiny_wgcna_ns)),
+                perl = TRUE))
+
+    if (hubgenes_uses_select && exists("select", envir = shiny_wgcna_ns, inherits = FALSE)) {
+      assignInNamespace("select", dplyr::select, ns = "ShinyWGCNA")
+    }
+  }
+
+  invisible(dplyr::select)
+}
+
 options(shiny.maxRequestSize = 300*1024^2)
 options(scipen = 6)
-select =  dplyr::select
+select <- dplyr::select
+ensure_dplyr_select()
 # type = "unsigned"
 # corType = "pearson"
 # maxPOutliers = ifelse(corType=="pearson",1,0.05)
@@ -911,7 +930,6 @@ server <- function(input, output, session){
   
   ## set WGCNA threads
   
-  select = dplyr::select
   wgcna_thread <- reactiveValues(current = 20)
   output$show.wgcna.threads = renderText({
     paste(as.character(input$wgcna.threads), "threads")
