@@ -890,9 +890,12 @@ server <- function(input, output, session){
               HTML(paste0('<font color = blue><b>No genes remain after the first filter.</b></font><br/>',
                           'For FPKM/TPM input, please use a smaller Expression Cutoff (default 1) or lower the Sample percentage.'))
             } else {
-              exp.ds$first_filter_gene_count <- ncol(exp.ds$table)
+              exp.ds$first_filter_gene_count <- nrow(exp.ds$table)
               reserved_gene_num <- min(GNC(), exp.ds$first_filter_gene_count)
-              # exp.ds$table is passed to WGCNA as samples x genes; GeneNumCut is the proportion of gene columns to remove.
+              # getdatExpr keeps first-filtered genes in rows, matching the original
+              # ShinyWGCNA workflow. GeneNumCut is therefore calculated from the
+              # gene-row count; getdatExpr2 returns the WGCNA-ready samples x genes
+              # matrix used downstream.
               gene_num_cut <- 1 - reserved_gene_num/exp.ds$first_filter_gene_count
               incProgress(1/2,detail = p_mass[2])
               exp.ds$table2 = getdatExpr2(datExpr = exp.ds$table,
@@ -929,12 +932,7 @@ server <- function(input, output, session){
   firstFilterGeneIds <- reactive({
     if(is.null(exp.ds$table)){return(character(0))}
     if(is.null(exp.ds$table2)){return(character(0))}
-    table_rows <- rownames(exp.ds$table)
-    table_cols <- colnames(exp.ds$table)
-    if(!is.null(table_rows) && length(intersect(table_rows, colnames(exp.ds$table2))) > 0) {
-      return(table_rows)
-    }
-    table_cols
+    rownames(exp.ds$table)
   })
 
   cleanedGeneIds <- reactive({
