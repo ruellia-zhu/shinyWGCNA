@@ -473,8 +473,8 @@ ui <- shinyUI(
                        ),
                        textInput(inputId = "blocksize",
                                  label = "select max blocksize",
-                                 value = 5000),
-                       p("MaxBlockSize, The default was 5000, 4GB memory could handle 8000-10000 genes, for 16GB memory you can select at most of 24000 genes in one block, 32GB should be enough for 30000-40000. Try to keep all selected genes in one block",
+                                 value = 40000),
+                       p("MaxBlockSize, The default is 40000, 4GB memory could handle 8000-10000 genes, for 16GB memory you can select at most of 24000 genes in one block, 32GB should be enough for 30000-40000. Try to keep all selected genes in one block",
                          style = "color: #7a8788;font-size: 12px; font-style:Italic")
                      )
                  ),
