@@ -7,11 +7,11 @@
 # Update date: 2026/05/08
 # Update V3.0: configure WGCNA server threads, support FPKM/TPM labels, restore cleaned genes, and add TOMplot
 ###############################
-select = dplyr::select
+# dplyr::select is assigned after dplyr is installed and loaded.
 ### You must set this before app is loaded, or hub gene will not work - by yuntao
 options("repos" = c(CRAN="https://mirrors.tuna.tsinghua.edu.cn/CRAN/"))
 if (!requireNamespace("BiocManager", quietly = TRUE))
-    install.packages("BiocManager")
+  install.packages("BiocManager")
 if (!require('devtools')) install.packages('devtools');
 if (!require('DESeq2')) BiocManager::install('DESeq2',update = FALSE);
 if (!require('shinyjs')) install.packages('shinyjs');
@@ -38,8 +38,15 @@ if (!require('tidyverse')) install.packages('tidyverse');
 if (!require('shinyjqui')) install.packages('shinyjqui');
 if (!require('colourpicker')) install.packages('colourpicker');
 suppressMessages(library(devtools))
-if (!require('ShinyWGCNA')) devtools::install_github("ShawnWx2019/WGCNAShinyFun",ref = "master");
+if (!require('ShinyWGCNA')) devtools::install_github("ShawnWx2019/WGCNAShinyFun", ref = "master", upgrade = "never");
 suppressMessages(library(ShinyWGCNA))
+if (as.character(packageVersion("ShinyWGCNA")) != "0.1.2") {
+  warning(paste0(
+    "This script was adjusted for ShinyWGCNA 0.1.2. Current loaded version is ",
+    as.character(packageVersion("ShinyWGCNA")),
+    "."
+  ))
+}
 suppressMessages(library(shinyjs))
 suppressMessages(library(dashboardthemes))
 suppressMessages(library(shinydashboard))
@@ -77,7 +84,7 @@ read_expression_matrix <- function(datapath) {
   if (is.null(datapath) || !file.exists(datapath)) {
     stop("No expression matrix file was uploaded.", call. = FALSE)
   }
-
+  
   raw_head <- readBin(datapath, what = "raw", n = 4096)
   file_encoding <- ""
   if (length(raw_head) >= 2 && identical(raw_head[1:2], as.raw(c(0xff, 0xfe)))) {
@@ -91,7 +98,7 @@ read_expression_matrix <- function(datapath) {
   } else if (length(raw_head) >= 20 && mean(raw_head[seq(1, length(raw_head), by = 2)] == as.raw(0)) > 0.25) {
     file_encoding <- "UTF-16BE"
   }
-
+  
   preview_con <- if (nzchar(file_encoding)) file(datapath, open = "r", encoding = file_encoding) else file(datapath, open = "r")
   on.exit(close(preview_con), add = TRUE)
   preview_lines <- readLines(preview_con, n = 20, warn = FALSE)
@@ -99,7 +106,7 @@ read_expression_matrix <- function(datapath) {
   if (length(preview_lines) == 0) {
     stop("The uploaded expression matrix is empty.", call. = FALSE)
   }
-
+  
   count_delimiter <- function(x, delimiter) {
     matches <- gregexpr(delimiter, x, fixed = TRUE)[[1]]
     if (identical(matches, -1L)) 0L else length(matches)
@@ -114,7 +121,7 @@ read_expression_matrix <- function(datapath) {
   if (max(delimiter_counts) == 0) {
     stop("Could not detect a tab, comma, or semicolon delimiter in the expression matrix.", call. = FALSE)
   }
-
+  
   expr <- tryCatch(
     read.table(
       file = datapath,
@@ -130,15 +137,15 @@ read_expression_matrix <- function(datapath) {
       stop(paste("Failed to read the expression matrix:", conditionMessage(e)), call. = FALSE)
     }
   )
-
+  
   names(expr) <- sub("^\\ufeff", "", trimws(names(expr)))
   expr <- expr[, !vapply(expr, function(x) all(is.na(x) | trimws(as.character(x)) == ""), logical(1)), drop = FALSE]
   expr <- expr[!apply(expr, 1, function(x) all(is.na(x) | trimws(as.character(x)) == "")), , drop = FALSE]
-
+  
   if (nrow(expr) == 0 || ncol(expr) < 3) {
     stop("The expression matrix must contain at least one gene column and two sample expression columns after parsing.", call. = FALSE)
   }
-
+  
   for (col in seq.int(2, ncol(expr))) {
     if (is.character(expr[[col]])) {
       expr[[col]] <- trimws(expr[[col]])
@@ -146,11 +153,11 @@ read_expression_matrix <- function(datapath) {
     }
     expr[[col]] <- suppressWarnings(as.numeric(expr[[col]]))
   }
-
+  
   if (all(vapply(expr[-1], function(x) all(is.na(x)), logical(1)))) {
     stop("No numeric sample expression columns were found. Please check the file delimiter and encoding.", call. = FALSE)
   }
-
+  
   attr(expr, "delimiter") <- switch(sep, "\t" = "tab", "," = "comma", ";" = "semicolon")
   attr(expr, "encoding") <- if (nzchar(file_encoding)) file_encoding else "native/UTF-8"
   expr
@@ -164,10 +171,51 @@ expression_matrix_error_message <- function(err) {
   ))
 }
 
+# ShinyWGCNA 0.1.2 uses these internal argument values:
+# datatype: count / expected count / normalized count / peak area (metabolomics) / protein abundance
+# method:   vst / raw / logarithm
+normalize_shinywgcna_datatype <- function(x) {
+  x <- as.character(x)
+  if (x %in% c("FPKM", "TPM", "RPKM", "CPM", "FPKM/TPM/RPKM/CPM", "FPKM_TPM_RPKM_CPM")) {
+    return("normalized count")
+  }
+  x
+}
+
+normalize_shinywgcna_method <- function(x) {
+  x <- as.character(x)
+  if (x %in% c("varianceStabilizingTransformation", "vst")) {
+    return("vst")
+  }
+  if (x %in% c("rawFPKM", "raw")) {
+    return("raw")
+  }
+  if (x %in% c("lgFPKM", "lgcpm", "logCPM", "logarithm")) {
+    return("logarithm")
+  }
+  x
+}
+
+call_getpower <- function(datExpr, rscut, type = "unsigned") {
+  if ("type" %in% names(formals(getpower))) {
+    getpower(datExpr = datExpr, rscut = rscut, type = type)
+  } else {
+    getpower(datExpr = datExpr, rscut = rscut)
+  }
+}
+
+call_powertest <- function(power.test, datExpr, nGenes, type = "unsigned") {
+  if ("type" %in% names(formals(powertest))) {
+    powertest(power.test = power.test, datExpr = datExpr, nGenes = nGenes, type = type)
+  } else {
+    powertest(power.test = power.test, datExpr = datExpr, nGenes = nGenes)
+  }
+}
+
 # 01. UI =========================
 ## logo
 customLogo <- shinyDashboardLogoDIY(
-
+  
   boldText = "Interactive"
   ,mainText = "WGCNA with GUI"
   ,textSize = 14
@@ -176,7 +224,7 @@ customLogo <- shinyDashboardLogoDIY(
   ,badgeTextSize = 2
   ,badgeBackColor = "#40E0D0"
   ,badgeBorderRadius = 3
-
+  
 )
 
 ui <- shinyUI(
@@ -199,7 +247,7 @@ ui <- shinyUI(
                          step = 1
                        ),
                        helpText("Set how many server CPU threads WGCNA can use for network analysis. Choose a value according to server load and available cores.",
-                         style = "color: #7a8788;font-size: 12px; font-style:Italic"),
+                                style = "color: #7a8788;font-size: 12px; font-style:Italic"),
                        helpText("Default is 20 threads. Lower values reduce server pressure; higher values may speed up large analyses but can affect other users.",
                                 style = "color: #7a8788;font-size: 12px; font-style:Italic"),
                        
@@ -240,19 +288,28 @@ ui <- shinyUI(
                        radioButtons(
                          inputId = "format",
                          label = "Format",
-                         choices = c("count","FPKM"),
-                         selected = "FPKM"
+                         choices = c(
+                           count = "count",
+                           FPKM_TPM_RPKM_CPM = "normalized count"
+                         ),
+                         selected = "normalized count"
                        ),
-                       p("Normalized included: FPKM, RPKM, CPM and other method",
+                       p("Use normalized count for most data, e.g. FPKM, TPM",
                          style = "color: #7a8788;font-size: 12px; font-style:Italic"),
+                       radioButtons(
+                         inputId = "networktype",
+                         label = "Network type",
+                         choices = c("unsigned", "signed"),
+                         selected = "unsigned"
+                       ),
                        selectInput(
                          inputId = "method1",
                          label = "Normalized method",
-                         choices = c(VST = "varianceStabilizingTransformation",
-                                     lgCPM = "lgcpm",
-                                     FPKM = "rawFPKM",
-                                     lgFPKM = "lgFPKM"),
-                         selected = "rawFPKM"
+                         choices = c(
+                           FPKM = "raw",
+                           log10_FPKM = "logarithm"
+                         ),
+                         selected = "raw"
                        ),
                        HTML('<font color = #FF6347  size = 3.2><b>First Time filter</b></font>'),
                        textInput(
@@ -263,7 +320,7 @@ ui <- shinyUI(
                        textInput(
                          inputId = "RCcut",
                          label = "Expression Cutoff",
-                         value = "10"
+                         value = "1"
                        ),
                        p("Noise removal, for example, removing all features that have a count of less than say 10 in more than 90% of the samples",
                          style = "color: #7a8788;font-size: 12px; font-style:Italic"),
@@ -295,7 +352,7 @@ ui <- shinyUI(
                                 htmlOutput("Inputcheck"),
                                 htmlOutput("filter1"),
                                 htmlOutput("filter2"),
-
+                                
                        ),
                        tabPanel(title = "Preview of Input",height = "500px",width = "100%",
                                 icon = icon("table"),
@@ -307,10 +364,10 @@ ui <- shinyUI(
                                   plotOutput("clustPlot")
                                 ),
                                 downloadButton("downfig1","Download")
-
+                                
                        )# tabPanel
                      )
-
+                     
                    )# fluidPage
                  )#mainPanel
                ) # sidebarLayout
@@ -338,7 +395,7 @@ ui <- shinyUI(
                          choices = c("Recommended","Customized"),
                          selected = "Recommended"
                        ),
-
+                       
                        sliderInput(
                          inputId = "PowerSelect",
                          label = "Final Power Selection",
@@ -369,8 +426,8 @@ ui <- shinyUI(
                                           value = 10),
                                 actionButton("adjust2","Set fig size"),
                                 downloadButton("downfig2","Download")
-
-
+                                
+                                
                        ),
                        tabPanel(title = "Information of sft table",height = "500px",width = "100%",
                                 icon = icon("table"),
@@ -390,7 +447,7 @@ ui <- shinyUI(
                                           value = 10),
                                 actionButton("adjust3","Set fig size"),
                                 downloadButton("downfig3","Download")
-
+                                
                        )## tabPanel
                      )## tabsetPanel
                    )## fluidPage
@@ -403,23 +460,23 @@ ui <- shinyUI(
                icon = icon("play-circle"),
                sidebarLayout(
                  div(id = "Sidebar3",
-                   sidebarPanel(
-                     width = 2,
-                     sliderInput(
-                       inputId = "minMsize",
-                       label = "min Module Size",min = 0,max = 200,value = 30
-                     ),
-                     sliderInput(
-                       inputId = "mch",
-                       label = "module cuttree height",
-                       min = 0, max = 1, value = 0.25
-                     ),
-                     textInput(inputId = "blocksize",
-                               label = "select max blocksize",
-                               value = 5000),
-                     p("MaxBlockSize, The default was 5000, 4GB memory could handle 8000-10000 genes, for 16GB memory you can select at most of 24000 genes in one block, 32GB should be enough for 30000-40000. Try to keep all selected genes in one block",
-                       style = "color: #7a8788;font-size: 12px; font-style:Italic")
-                   )
+                     sidebarPanel(
+                       width = 2,
+                       sliderInput(
+                         inputId = "minMsize",
+                         label = "min Module Size",min = 0,max = 200,value = 30
+                       ),
+                       sliderInput(
+                         inputId = "mch",
+                         label = "module cuttree height",
+                         min = 0, max = 1, value = 0.25
+                       ),
+                       textInput(inputId = "blocksize",
+                                 label = "select max blocksize",
+                                 value = 5000),
+                       p("MaxBlockSize, The default was 5000, 4GB memory could handle 8000-10000 genes, for 16GB memory you can select at most of 24000 genes in one block, 32GB should be enough for 30000-40000. Try to keep all selected genes in one block",
+                         style = "color: #7a8788;font-size: 12px; font-style:Italic")
+                     )
                  ),
                  mainPanel(
                    fluidPage(
@@ -441,7 +498,7 @@ ui <- shinyUI(
                                    value = 10),
                          actionButton("adjust4","Set fig size"),
                          downloadButton("downfig4","Download"),
-
+                         
                          br(),
                          br(),
                          tableOutput("m2num")
@@ -485,7 +542,7 @@ ui <- shinyUI(
                          downloadButton("downtbl2","download")
                        )
                      )
-
+                     
                    )
                  )
                )
@@ -496,29 +553,29 @@ ui <- shinyUI(
                icon = icon("star-of-david"),
                sidebarLayout(
                  div(id = "Sidebar4",
-                   sidebarPanel(
-                     width = 2,
-                     fileInput(
-                       inputId = "traitData",
-                       label = "Upload expression matrix",
-                       accept = c(".txt",".csv",".xls")
-                     ),
-                     colourpicker::colourInput(inputId = "colormin",
-                                               label = "Minimum",
-                                               value = "blue"),
-                     colourpicker::colourInput(inputId = "colormid",
-                                               label = "Middle",
-                                               value = "white"),
-                     colourpicker::colourInput(inputId = "colormax",
-                                               label = "Maxmum",
-                                               value = "red"),
-                     textInput(
-                       inputId = "xangle",
-                       label = "x axis label angle",
-                       value = 0
-                     ),
-                     actionButton("starttrait","Start analysis")
-                   )
+                     sidebarPanel(
+                       width = 2,
+                       fileInput(
+                         inputId = "traitData",
+                         label = "Upload expression matrix",
+                         accept = c(".txt",".csv",".xls")
+                       ),
+                       colourpicker::colourInput(inputId = "colormin",
+                                                 label = "Minimum",
+                                                 value = "blue"),
+                       colourpicker::colourInput(inputId = "colormid",
+                                                 label = "Middle",
+                                                 value = "white"),
+                       colourpicker::colourInput(inputId = "colormax",
+                                                 label = "Maxmum",
+                                                 value = "red"),
+                       textInput(
+                         inputId = "xangle",
+                         label = "x axis label angle",
+                         value = 0
+                       ),
+                       actionButton("starttrait","Start analysis")
+                     )
                  ),
                  mainPanel(
                    actionButton("toggleSidebar4",
@@ -563,24 +620,24 @@ ui <- shinyUI(
                icon = icon("broom"),
                sidebarLayout(
                  div(id = "sidebar5",
-                   sidebarPanel(
-                     width = 2,
-                     selectInput(
-                       inputId = "strait",
-                       label = "Select traits",
-                       choices = c("select a trait","trait2","..."),
-                       selected = "select a trait",
-                       multiple = F
-                     ),
-                     selectInput(
-                       inputId = "smodule",
-                       label = "Select module",
-                       choices = c("red","black","..."),
-                       selected = "red",
-                       multiple = F
-                     ),
-                     actionButton("InterMode","Start Analysis")
-                   )
+                     sidebarPanel(
+                       width = 2,
+                       selectInput(
+                         inputId = "strait",
+                         label = "Select traits",
+                         choices = c("select a trait","trait2","..."),
+                         selected = "select a trait",
+                         multiple = F
+                       ),
+                       selectInput(
+                         inputId = "smodule",
+                         label = "Select module",
+                         choices = c("red","black","..."),
+                         selected = "red",
+                         multiple = F
+                       ),
+                       actionButton("InterMode","Start Analysis")
+                     )
                  ),
                  mainPanel(
                    actionButton("toggleSidebar5",
@@ -592,7 +649,7 @@ ui <- shinyUI(
                          icon = icon("chart-line"),
                          jqui_resizable(
                            plotOutput("GSCon")
-                           ),
+                         ),
                          textInput(inputId = "width7",
                                    label = "width",
                                    value = 10),
@@ -601,13 +658,13 @@ ui <- shinyUI(
                                    value = 10),
                          actionButton("adjust7","Set fig size"),
                          downloadButton("downfig7","Download")
-                         ),
+                       ),
                        tabPanel(
                          title = "Heatmap",height = "500px",width = "100%",
                          icon = icon("buromobelexperte"),
                          jqui_resizable(
                            plotOutput("heatmap")
-                           ),
+                         ),
                          textInput(inputId = "width8",
                                    label = "width",
                                    value = 10),
@@ -703,11 +760,14 @@ ui <- shinyUI(
                  )
                )
              )##tabPanel
-
+             
   )## navbarPage
 )## UI
 
 server <- function(input, output, session){
+  session$onSessionEnded(function() {
+    stopApp()
+  })
   observeEvent(input$toggleSidebar, {
     shinyjs::toggle(id = "Sidebar")
   })
@@ -731,7 +791,7 @@ server <- function(input, output, session){
     if(is.null(file1)){return()}
     read_expression_matrix(file1$datapath)
   })
-
+  
   output$Inputcheck = renderUI({
     matrix_data <- tryCatch(data(), error = function(e) e)
     if(is.null(matrix_data)){return()}
@@ -741,8 +801,8 @@ server <- function(input, output, session){
     if(length(which(is.na(matrix_data))) == 0) {
       HTML(paste0('<font color = red><b>
           Congratulations!,</b></font> There is no problem with your expression matrix format, please proceed to the next step',
-          '<br/><font color = blue>Detected delimiter: <b>', attr(matrix_data, "delimiter"),
-          '</b>; detected encoding: <b>', attr(matrix_data, "encoding"), '</b>.</font>'))
+                  '<br/><font color = blue>Detected delimiter: <b>', attr(matrix_data, "delimiter"),
+                  '</b>; detected encoding: <b>', attr(matrix_data, "encoding"), '</b>.</font>'))
     } else {
       HTML(
         '<font color = blue><b>Sorry!</b></font>
@@ -750,11 +810,11 @@ server <- function(input, output, session){
        '
       )
     }
-
+    
   })
   
   ## set WGCNA threads
-
+  
   select = dplyr::select
   wgcna_thread <- reactiveValues(current = 20)
   output$show.wgcna.threads = renderText({
@@ -770,28 +830,31 @@ server <- function(input, output, session){
     message(paste("WGCNA threads set to", thread_count))
   })
   
-
+  
   
   ## count number
   fmt = reactive({
-    input$format
+    normalize_shinywgcna_datatype(input$format)
   })
   observe({
-    if(fmt() == "count") {
-      updateSelectInput(session, "method1",choices = c(VST = "varianceStabilizingTransformation",
-                                                       logCPM = "lgcpm"))
+    if(fmt() %in% c("count", "expected count")) {
+      updateSelectInput(session, "method1", choices = c(VST = "vst"), selected = "vst")
       updateTextInput(session,"RCcut",value = 10)
-    } else if(fmt() == "FPKM") {
-      updateSelectInput(session, "method1",choices = c(FPKM = "rawFPKM",
-                                                       logFPKM = "lgFPKM"))
+    } else {
+      updateSelectInput(session, "method1", choices = c(FPKM = "raw",
+                                                        log10_FPKM = "logarithm"),
+                        selected = "raw")
       updateTextInput(session,"RCcut",value = 1)
     }
-
+    
   })
   mtd = reactive({
-    input$method1
+    normalize_shinywgcna_method(input$method1)
   })
-
+  networktype = reactive({
+    as.character(input$networktype)
+  })
+  
   sampP = reactive({
     as.numeric(input$SamPer)
   })
@@ -807,7 +870,7 @@ server <- function(input, output, session){
   ## set reactiveValues
   exp.ds<-reactiveValues(data=NULL)
   downloads <- reactiveValues(data = NULL)
-
+  
   observeEvent(
     input$action1,
     {
@@ -824,7 +887,9 @@ server <- function(input, output, session){
       exp.ds$table2 = data.frame()
       exp.ds$param = list()
       exp.ds$layout = as.character(input$treelayout)
-
+      exp.ds$GNC = NULL
+      exp.ds$gnccheck = NULL
+      
       output$filter1 = renderUI({
         input$action1
         p_mass = c("Processing step1, remove very low expressed genes",
@@ -834,15 +899,33 @@ server <- function(input, output, session){
             message = "Raw data normlization",
             value = 0,{
               for (i in 1:2) {
-               incProgress(1/2,detail = p_mass[i])
-              # 放一个彩蛋 incProgress(1/2,detail = c("找不到对象，找不到对象，找不到「对象」汪汪！>_< ~~","终于找到了 o_O ~~")[i])
+                incProgress(1/2,detail = p_mass[i])
+                # 放一个彩蛋 incProgress(1/2,detail = c("找不到对象，找不到对象，找不到「对象」汪汪！>_< ~~","终于找到了 o_O ~~")[i])
                 if(i == 1) {
                   exp.ds$table = getdatExpr(rawdata = matrix_data,
                                             RcCutoff = rccutoff(),samplePerc = sampP(),
                                             datatype = fmt(),method = mtd())
                 } else if (i == 2){
+                  if (is.null(exp.ds$table) || nrow(exp.ds$table) == 0) {
+                    stop("No genes remained after the first expression filter. Please lower Expression Cutoff or Sample percentage.", call. = FALSE)
+                  }
+                  requested_gene_num <- as.integer(GNC())
+                  if (is.na(requested_gene_num) || requested_gene_num < 2) {
+                    stop("Reserved genes Num. must be a positive integer of at least 2.", call. = FALSE)
+                  }
+                  exp.ds$GNC <- min(requested_gene_num, nrow(exp.ds$table))
+                  exp.ds$gnccheck <- if (requested_gene_num > nrow(exp.ds$table)) {
+                    "The requested reserved gene number is greater than the number of genes after the first filter. All genes after the first filter were retained."
+                  } else {
+                    "All going well!"
+                  }
+                  gene_num_cut <- 1 - exp.ds$GNC / nrow(exp.ds$table)
+                  gene_num_cut <- max(min(gene_num_cut, 0.999999), 0)
                   exp.ds$table2 = getdatExpr2(datExpr = exp.ds$table,
-                                              GeneNumCut = 1-GNC()/nrow(exp.ds$table),cutmethod = cutmethod())
+                                              GeneNumCut = gene_num_cut, cutmethod = cutmethod())
+                  if (is.null(exp.ds$table2) || nrow(exp.ds$table2) < 2 || ncol(exp.ds$table2) < 2) {
+                    stop("The cleaned expression matrix has fewer than 2 samples or fewer than 2 genes. Please check filtering parameters.", call. = FALSE)
+                  }
                   exp.ds$param = getsampleTree(exp.ds$table2,layout = exp.ds$layout)
                 }
                 Sys.sleep(0.1)
@@ -860,13 +943,14 @@ server <- function(input, output, session){
         }
         isolate(HTML(paste0('<font color = red> <b>After filtered by conditions:</b> </font>removing all features that have a count of less than say <font color = red><b>',rccutoff(),'</b></font> in more than <font color = red> <b>',100*sampP(),'% </b></font> of the samples','<br/>',
                             '<font color = red> <b>Remaining Gene Numbers: </b> </font>',nrow(exp.ds$table),'<br/>',
-                            '<font color = red> <b>After filtered by conditions:</b> </font>Genes with <font color = red><b>',cutmethod(),'</b></font> ranked top <font color = red> <b>',GNC(),' </b></font> of all expressed genes','<br/>',
-                            '<font color = red> <b>Remaining Gene Numbers: </b> </font>',ncol(exp.ds$table2))))
+                            '<font color = red> <b>After filtered by conditions:</b> </font>Genes with <font color = red><b>',cutmethod(),'</b></font> ranked top <font color = red> <b>',exp.ds$GNC,' </b></font> of all expressed genes','<br/>',
+                            '<font color = red> <b>Remaining Gene Numbers: </b> </font>',ncol(exp.ds$table2),'<br/>',
+                            '<font color = red> <b>Notice: </b> </font>',exp.ds$gnccheck)))
       })
     }
   )
-
-
+  
+  
   ## summary num
   output$Inputbl = DT::renderDataTable({
     matrix_data <- tryCatch(data(), error = function(e) e)
@@ -883,11 +967,11 @@ server <- function(input, output, session){
     plot(exp.ds$param$sampleTree,main = "Sample clustering to detect outlier", sub = "", xlab = "")
   })
   ## download sample tree
-
+  
   rscut = reactive({
     as.numeric(input$CutoffR)
   })
-
+  
   observeEvent(
     input$Startsft,
     {
@@ -901,11 +985,11 @@ server <- function(input, output, session){
                        for (i in 1:2) {
                          incProgress(1/2, detail = sft_mess[i] )
                          if (i == 1) {
-                           exp.ds$sft = getpower(datExpr = exp.ds$table2,rscut = rscut())
+                           exp.ds$sft = call_getpower(datExpr = exp.ds$table2, rscut = rscut(), type = networktype())
                          } else {
                            return()
                          }
-
+                         
                        }
                      })
         isolate(HTML(paste0('<font color = red> <b>The power recommended by WGCNA is:</b> </font><font color = bule><b>',exp.ds$sft$power,'</b></font> ','<br/>',
@@ -913,8 +997,8 @@ server <- function(input, output, session){
       })
     }
   )
-
-
+  
+  
   ## outsft
   output$sftplot = renderPlot({
     if(is.null(exp.ds$table2)){return()}
@@ -952,20 +1036,20 @@ server <- function(input, output, session){
                        if (i == 1) {
                          if(PowerTorF() == "Recommended"){
                            exp.ds$power = exp.ds$sft$power
-                           exp.ds$cksft = powertest(power.test = exp.ds$sft$power,datExpr = exp.ds$table2,nGenes = exp.ds$param$nGenes)
+                           exp.ds$cksft = call_powertest(power.test = exp.ds$sft$power, datExpr = exp.ds$table2, nGenes = exp.ds$param$nGenes, type = networktype())
                          } else if (PowerTorF() == "Customized"){
                            exp.ds$power = pcus()
-                           exp.ds$cksft = powertest(power.test = pcus(),datExpr = exp.ds$table2,nGenes = exp.ds$param$nGenes)
+                           exp.ds$cksft = call_powertest(power.test = pcus(), datExpr = exp.ds$table2, nGenes = exp.ds$param$nGenes, type = networktype())
                          }
                        } else {
                          return()
                        }
-
+                       
                      }
                    })
     }
   )
-
+  
   output$sfttest = renderPlot({
     if(is.null(exp.ds$sft)){return()}
     input$Startcheck
@@ -1011,14 +1095,14 @@ server <- function(input, output, session){
     table(exp.ds$moduleColors)
   })
   output$eah = renderPlot({
-      input$Startnet
-      if(is.null(exp.ds$net)){return()}
-      plotEigengeneNetworks(exp.ds$MEs_col, "Eigengene adjacency heatmap",
-                            marDendro = c(3,3,2,4),
-                            marHeatmap = c(3,4,2,2), plotDendrograms = T,
-                            xLabelsAngle = 90)
-    })
-
+    input$Startnet
+    if(is.null(exp.ds$net)){return()}
+    plotEigengeneNetworks(exp.ds$MEs_col, "Eigengene adjacency heatmap",
+                          marDendro = c(3,3,2,4),
+                          marHeatmap = c(3,4,2,2), plotDendrograms = T,
+                          xLabelsAngle = 90)
+  })
+  
   observeEvent(input$StartTOMplot, {
     if(is.null(exp.ds$net)){return()}
     if(is.null(exp.ds$table2)){return()}
@@ -1033,7 +1117,7 @@ server <- function(input, output, session){
       exp.ds$tomGeneTree <- hclust(as.dist(exp.ds$tomDiss), method = "average")
     })
   })
-
+  
   output$tomplot = renderPlot({
     input$StartTOMplot
     if(is.null(exp.ds$tomDiss)){return()}
@@ -1041,23 +1125,23 @@ server <- function(input, output, session){
     plotTOM <- exp.ds$tomDiss^7
     TOMplot(plotTOM, exp.ds$tomGeneTree, exp.ds$moduleColors, main = "Network heatmap plot, all genes")
   })
-
+  
   output$g2m = DT::renderDataTable({
     input$Startnet
     if(is.null(exp.ds$net)){return()}
     exp.ds$Gene2module
   })
-
+  
   phen <- reactive({
     file2 <- input$traitData
     if(is.null(file2)){return()}
     read.csv(file = file2$datapath,
-               sep=",",
-               header = T,
-               stringsAsFactors = F)
+             sep=",",
+             header = T,
+             stringsAsFactors = F)
   })
-
-
+  
+  
   observeEvent(
     input$starttrait,
     {
@@ -1082,7 +1166,7 @@ server <- function(input, output, session){
         exp.ds$phen<- c
       } else {
         exp.ds$phen = data.frame(row.names = phen()[,1],
-                            phen()[,-1])
+                                 phen()[,-1])
       }
       exp.ds$phen =  exp.ds$phen[match(rownames(exp.ds$table2),rownames(exp.ds$phen)),]
       exp.ds$traitout = getMt(phenotype = exp.ds$phen,MEs_col = exp.ds$MEs_col,
@@ -1107,40 +1191,40 @@ server <- function(input, output, session){
       )
     }
   )
-
-    output$mtplot = renderPlot({
-      input$starttrait
-      if(is.null(phen())){return()}
-      if(is.null(exp.ds$phen)){return()}
-      if(is.null(exp.ds$modTraitCor)){return()}
-      if(is.null(exp.ds$textMatrix)){return()}
-      if(is.null(exp.ds$Left_anno)){return()}
-      Heatmap(
-        matrix = exp.ds$modTraitCor,
-        cluster_rows = F, cluster_columns = F,
-        left_annotation = exp.ds$Left_anno,
-        cell_fun = function(j,i,x,y,width,height,fill) {
-          grid.text(sprintf(exp.ds$textMatrix[i,j]),x,y,gp = gpar(fontsize = 12))
-        },
-        row_names_side = "left",
-        column_names_rot = exp.ds$xangle,
-        heatmap_legend_param = list(
-          at = c(-1,-0.5,0,0.5, 1),
-          labels = c("-1","-0.5", "0","0.5", "1"),
-          title = "",
-          legend_height = unit(9, "cm"),
-          title_position = "lefttop-rot"
-        ),
-        rect_gp = gpar(col = "black", lwd = 1.2),
-        column_title = "Module-trait relationships",
-        column_title_gp = gpar(fontsize = 15, fontface = "bold"),
-        col = colorRamp2(c(-1, 0, 1), c(exp.ds$c_min, exp.ds$c_mid, exp.ds$c_max))
-      )
-
-    })
-
-
-
+  
+  output$mtplot = renderPlot({
+    input$starttrait
+    if(is.null(phen())){return()}
+    if(is.null(exp.ds$phen)){return()}
+    if(is.null(exp.ds$modTraitCor)){return()}
+    if(is.null(exp.ds$textMatrix)){return()}
+    if(is.null(exp.ds$Left_anno)){return()}
+    Heatmap(
+      matrix = exp.ds$modTraitCor,
+      cluster_rows = F, cluster_columns = F,
+      left_annotation = exp.ds$Left_anno,
+      cell_fun = function(j,i,x,y,width,height,fill) {
+        grid.text(sprintf(exp.ds$textMatrix[i,j]),x,y,gp = gpar(fontsize = 12))
+      },
+      row_names_side = "left",
+      column_names_rot = exp.ds$xangle,
+      heatmap_legend_param = list(
+        at = c(-1,-0.5,0,0.5, 1),
+        labels = c("-1","-0.5", "0","0.5", "1"),
+        title = "",
+        legend_height = unit(9, "cm"),
+        title_position = "lefttop-rot"
+      ),
+      rect_gp = gpar(col = "black", lwd = 1.2),
+      column_title = "Module-trait relationships",
+      column_title_gp = gpar(fontsize = 15, fontface = "bold"),
+      col = colorRamp2(c(-1, 0, 1), c(exp.ds$c_min, exp.ds$c_mid, exp.ds$c_max))
+    )
+    
+  })
+  
+  
+  
   output$traitmat = DT::renderDataTable({
     input$starttrait
     if(is.null(phen())){return()}
@@ -1148,7 +1232,7 @@ server <- function(input, output, session){
     if(is.null(exp.ds$modTraitCor)){return()}
     as.data.frame(exp.ds$modTraitCor)
   })
-
+  
   output$traitp = DT::renderDataTable({
     input$starttrait
     if(is.null(phen())){return()}
@@ -1156,7 +1240,7 @@ server <- function(input, output, session){
     if(is.null(exp.ds$modTraitP)){return()}
     as.data.frame(exp.ds$modTraitP)
   })
-
+  
   output$KME = DT::renderDataTable({
     input$starttrait
     if(is.null(phen())){return()}
@@ -1170,14 +1254,14 @@ server <- function(input, output, session){
   observe({
     updateSelectInput(session, "smodule",choices = s_mod())
   })
-
+  
   s_trait = reactive({
     colnames(exp.ds$modTraitP)
   })
   observe({
     updateSelectInput(session, "strait",choices = s_trait())
   })
-
+  
   observeEvent(
     input$InterMode,
     {
@@ -1194,10 +1278,10 @@ server <- function(input, output, session){
       exp.ds$st = as.character(input$strait)
       exp.ds$Heatmap = moduleheatmap(datExpr = exp.ds$table2,MEs = exp.ds$MEs_col,which.module = exp.ds$sml,
                                      moduleColors = exp.ds$moduleColors)
-
+      
     }
   )
-
+  
   output$GSCon = renderPlot({
     input$InterMode
     if(is.null(exp.ds$st)){return()}
@@ -1211,7 +1295,7 @@ server <- function(input, output, session){
                    traitData = exp.ds$phen,moduleColors = exp.ds$moduleColors,
                    geneModuleMembership = exp.ds$MM,nSamples = exp.ds$nSamples)
   })
-
+  
   output$heatmap = renderPlot({
     input$InterMode
     if(is.null(exp.ds$st)){return()}
@@ -1219,7 +1303,7 @@ server <- function(input, output, session){
     if(is.null(exp.ds$Heatmap)){return()}
     exp.ds$Heatmap
   })
-
+  
   output$GSMM.all = renderPlot({
     input$InterMode
     if(is.null(exp.ds$st)){return()}
@@ -1237,15 +1321,15 @@ server <- function(input, output, session){
               MEs = exp.ds$MEs_col,
               nSamples = exp.ds$nSamples)
   })
-
+  
   observe({
     updateSelectInput(session, "hubmodule",choices = s_mod())
   })
-
+  
   observe({
     updateSelectInput(session, "hubtrait",choices = s_trait())
   })
-
+  
   observeEvent(
     input$starthub,
     {
@@ -1268,10 +1352,10 @@ server <- function(input, output, session){
                                 kME.cut =exp.ds$kMEcut,
                                 datTrait = exp.ds$phen,
                                 g2m = exp.ds$Gene2module
-                                )
+      )
     }
   )
-
+  
   observeEvent(
     input$threadd,
     {
@@ -1294,7 +1378,7 @@ server <- function(input, output, session){
     if(is.null(exp.ds$hub.all)){return()}
     exp.ds$hub.all$hub1
   })
-
+  
   output$kMEhub = DT::renderDataTable({
     input$starthub
     if(is.null(exp.ds$hubml)){return()}
@@ -1304,7 +1388,7 @@ server <- function(input, output, session){
     if(is.null(exp.ds$hub.all)){return()}
     exp.ds$hub.all$hub3
   })
-
+  
   output$edgeFile = DT::renderDataTable({
     input$threadd
     if(is.null(exp.ds$hubml)){return()}
@@ -1312,7 +1396,7 @@ server <- function(input, output, session){
     if(is.null(exp.ds$cyt)){return()}
     exp.ds$cyt[[1]]
   })
-
+  
   output$nodeFile = DT::renderDataTable({
     input$threadd
     if(is.null(exp.ds$hubml)){return()}
@@ -1320,10 +1404,10 @@ server <- function(input, output, session){
     if(is.null(exp.ds$cyt)){return()}
     exp.ds$cyt[[2]]
   })
-
-# download ----------------------------------------------------------------
-
-
+  
+  # download ----------------------------------------------------------------
+  
+  
   observeEvent(
     input$adjust1,
     {
@@ -1412,7 +1496,7 @@ server <- function(input, output, session){
       "02.SftResult.pdf"
     },
     content = function(file) {
-      validate(need(hasDownstreamValue(exp.ds$sft) && !is.null(exp.ds$sft$plot),
+      validate(need(!is.null(exp.ds$sft) && length(exp.ds$sft) > 0 && !is.null(exp.ds$sft$plot),
                     "请先重新完成 soft-threshold analysis"))
       ggsave(plot = exp.ds$sft$plot,filename = file,width = downloads$width2,height = downloads$height2)
     }
@@ -1422,7 +1506,7 @@ server <- function(input, output, session){
       "03.CheckSft.pdf"
     },
     content = function(file) {
-      validate(need(hasDownstreamValue(exp.ds$cksft),
+      validate(need(!is.null(exp.ds$cksft) && length(exp.ds$cksft) > 0,
                     "请先重新完成 scale-free network check"))
       ggsave(plot = exp.ds$cksft,filename = file,width = downloads$width3,height = downloads$height3)
     }
@@ -1478,7 +1562,7 @@ server <- function(input, output, session){
       validate(need(!is.null(exp.ds$modTraitCor) && !is.null(exp.ds$textMatrix) && !is.null(exp.ds$Left_anno),
                     "请先重新完成 module-trait analysis"))
       pdf(file = file,width = downloads$width6, height = downloads$height6)
-
+      
       print(Heatmap(
         matrix = exp.ds$modTraitCor,
         cluster_rows = F, cluster_columns = F,
@@ -1500,7 +1584,7 @@ server <- function(input, output, session){
         column_title_gp = gpar(fontsize = 15, fontface = "bold"),
         col = colorRamp2(c(-1, 0, 1), c(exp.ds$c_min, exp.ds$c_mid, exp.ds$c_max))
       ))
-
+      
       dev.off()
     }
   )
@@ -1514,14 +1598,14 @@ server <- function(input, output, session){
                       !is.null(exp.ds$moduleColors) && !is.null(exp.ds$MM) && !is.null(exp.ds$nSamples),
                     "请先重新完成 GS/MM interaction analysis"))
       pdf(file = file,width = downloads$width7, height = downloads$height7)
-     print(getverboseplot(datExpr = exp.ds$table2,module = exp.ds$sml,pheno = exp.ds$st,MEs = exp.ds$MEs_col,
-                     traitData = exp.ds$phen,moduleColors = exp.ds$moduleColors,
-                     geneModuleMembership = exp.ds$MM,nSamples = exp.ds$nSamples))
+      print(getverboseplot(datExpr = exp.ds$table2,module = exp.ds$sml,pheno = exp.ds$st,MEs = exp.ds$MEs_col,
+                           traitData = exp.ds$phen,moduleColors = exp.ds$moduleColors,
+                           geneModuleMembership = exp.ds$MM,nSamples = exp.ds$nSamples))
       dev.off()
     }
   )
   output$downfig8 = downloadHandler(
-
+    
     filename = function() {
       paste0("08.",exp.ds$sml,"-",exp.ds$st,"MEandGeneHeatmap.pdf")
     },
@@ -1534,7 +1618,7 @@ server <- function(input, output, session){
     }
   )
   output$downfig10 = downloadHandler(
-
+    
     filename = function() {
       "09.GSvsMM.all.pdf"
     },
@@ -1545,15 +1629,15 @@ server <- function(input, output, session){
                     "请先重新完成 GS/MM interaction analysis"))
       pdf(file = file,width = downloads$width10, height = downloads$height10)
       print(MMvsGSall(which.trait = exp.ds$st,
-                traitData = exp.ds$phen,nSamples = exp.ds$nSamples,
-                datExpr = exp.ds$table2,
-                moduleColors = exp.ds$moduleColors,
-                geneModuleMembership = exp.ds$MM,MEs = exp.ds$MEs_col))
+                      traitData = exp.ds$phen,nSamples = exp.ds$nSamples,
+                      datExpr = exp.ds$table2,
+                      moduleColors = exp.ds$moduleColors,
+                      geneModuleMembership = exp.ds$MM,MEs = exp.ds$MEs_col))
       dev.off()
     }
   )
   output$downtbl2 = downloadHandler(
-
+    
     filename = function() {
       if(is.null(exp.ds$net)){return()}
       "01.Gene2Module.xls"
@@ -1604,18 +1688,6 @@ server <- function(input, output, session){
       write.table(x = exp.ds$cyt[[2]],file = file,sep = "\t",row.names = F,quote = F)
     }
   )
-  shinyServer(function(input, output, session){
-    session$onSessionEnded(function() {
-      stopApp()
-    })
-  })
-
 }
-
-shinyServer(function(input, output, session){
-  session$onSessionEnded(function() {
-    stopApp()
-  })
-})
 
 shinyApp(ui,server)
