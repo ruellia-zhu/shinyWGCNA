@@ -701,12 +701,10 @@ readExpressionMatrix <- function(upload) {
             expression_format_message
           ), call. = FALSE)
         }
-        rownames(table) <- gene_ids
-        table <- table[-1]
       }
 
-
-      for(column_name in names(table)) {
+      expression_column_names <- names(table)[-1]
+      for(column_name in expression_column_names) {
         original_column <- table[[column_name]]
         converted_column <- suppressWarnings(as.numeric(as.character(original_column)))
         if(any(is.na(converted_column) & !is.na(original_column))) {
@@ -718,6 +716,7 @@ readExpressionMatrix <- function(upload) {
         }
         table[[column_name]] <- converted_column
       }
+      rownames(table) <- NULL
       return(table)
     }
   }
