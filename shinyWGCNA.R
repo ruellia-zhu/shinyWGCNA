@@ -816,7 +816,6 @@ server <- function(input, output, session){
       exp.ds$table[, gene_ids, drop = FALSE]
     }
   }
-
   output$Inputbl = DT::renderDataTable({
     if(is.null(data())){return()}
     if(length(which(is.na(data()))) != 0) {return()}
