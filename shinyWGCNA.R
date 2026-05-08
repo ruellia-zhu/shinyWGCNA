@@ -852,8 +852,10 @@ server <- function(input, output, session){
               return(HTML(paste0('<font color = blue><b>No genes remain after the first filter.</b></font><br/>',
                                  'For FPKM/TPM input, please use a smaller Expression Cutoff (default 1) or lower the Sample percentage.')))
             }
-            reserved_gene_num <- min(GNC(), nrow(exp.ds$table))
-            gene_num_cut <- 1 - reserved_gene_num/nrow(exp.ds$table)
+            first_filter_gene_num <- ncol(exp.ds$table)
+            reserved_gene_num <- min(GNC(), first_filter_gene_num)
+            # exp.ds$table is passed to WGCNA as samples x genes; GeneNumCut is the proportion of gene columns to remove.
+            gene_num_cut <- 1 - reserved_gene_num/first_filter_gene_num
             incProgress(1/2,detail = p_mass[2])
             exp.ds$table2 = getdatExpr2(datExpr = exp.ds$table,
                                         GeneNumCut = gene_num_cut,cutmethod = cutmethod())
@@ -865,8 +867,8 @@ server <- function(input, output, session){
           }
         )
         isolate(HTML(paste0('<font color = red> <b>After filtered by conditions:</b> </font>removing all features with expression/count less than <font color = red><b>',rccutoff(),'</b></font> in more than <font color = red> <b>',100*sampP(),'% </b></font> of the samples','<br/>',
-                            '<font color = red> <b>Remaining Gene Numbers: </b> </font>',nrow(exp.ds$table),'<br/>',
-                            '<font color = red> <b>After filtered by conditions:</b> </font>Genes with <font color = red><b>',cutmethod(),'</b></font> ranked top <font color = red> <b>',min(GNC(), nrow(exp.ds$table)),' </b></font> of all expressed genes','<br/>',
+                            '<font color = red> <b>Remaining Gene Numbers: </b> </font>',ncol(exp.ds$table),'<br/>',
+                            '<font color = red> <b>After filtered by conditions:</b> </font>Genes with <font color = red><b>',cutmethod(),'</b></font> ranked top <font color = red> <b>',min(GNC(), ncol(exp.ds$table)),' </b></font> of all expressed genes','<br/>',
                             '<font color = red> <b>Remaining Gene Numbers: </b> </font>',ncol(exp.ds$table2))))
       })
     }
