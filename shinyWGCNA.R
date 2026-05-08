@@ -1,11 +1,10 @@
 ###############################
 #	prj: shiny app
 #	Assignment: WGCNA by click shiny app
-#	Author: Shawn Wang
-#	Date: Jan 12, 2021
-# V3.0 Updater : Yuntao Zhu
+# Maintainer : Yuntao Zhu
 # Update date: 2026/05/08
 # Update V3.0: configure WGCNA server threads, support FPKM/TPM labels, restore cleaned genes, and add TOMplot
+# Update V3.2: fixed bugs when shinyWGCNA ver = 0.1.2
 ###############################
 # dplyr::select is assigned after dplyr is installed and loaded.
 ### You must set this before app is loaded, or hub gene will not work - by yuntao
@@ -71,19 +70,19 @@ suppressMessages(library(ggpubr))
 suppressMessages(library(dplyr))
 ensure_dplyr_select <- function() {
   assign("select", dplyr::select, envir = .GlobalEnv)
-
+  
   if ("ShinyWGCNA" %in% loadedNamespaces()) {
     shiny_wgcna_ns <- asNamespace("ShinyWGCNA")
     hubgenes_uses_select <- exists("hubgenes", envir = shiny_wgcna_ns, inherits = FALSE) &&
       any(grepl("(^|[^:[:alnum:]_.])select\\s*\\(",
                 deparse(get("hubgenes", envir = shiny_wgcna_ns)),
                 perl = TRUE))
-
+    
     if (hubgenes_uses_select && exists("select", envir = shiny_wgcna_ns, inherits = FALSE)) {
       assignInNamespace("select", dplyr::select, ns = "ShinyWGCNA")
     }
   }
-
+  
   invisible(dplyr::select)
 }
 
@@ -308,22 +307,62 @@ call_powertest <- function(power.test, datExpr, nGenes, type = "unsigned") {
   }
 }
 
-call_getMt <- function(phenotype, MEs_col, nSamples, moduleColors, datExpr) {
+call_getMt <- function(phenotype, MEs_col = NULL, nSamples, moduleColors, datExpr) {
   getMt_formals <- names(formals(getMt))
-
+  getMt_args <- list(
+    phenotype = phenotype,
+    nSamples = nSamples,
+    moduleColors = moduleColors,
+    datExpr = datExpr
+  )
+  
+  # ShinyWGCNA 0.1.2 on some installations has getMt(phenotype, nSamples, moduleColors, datExpr).
+  # Older / alternate builds may also expose MEs_col or MEs. Add it only when the function accepts it.
   if ("MEs_col" %in% getMt_formals) {
-    getMt(phenotype = phenotype, MEs_col = MEs_col,
-          nSamples = nSamples, moduleColors = moduleColors, datExpr = datExpr)
+    getMt_args$MEs_col <- MEs_col
   } else if ("MEs" %in% getMt_formals) {
-    getMt(phenotype = phenotype, MEs = MEs_col,
-          nSamples = nSamples, moduleColors = moduleColors, datExpr = datExpr)
-  } else {
+    getMt_args$MEs <- MEs_col
+  }
+  
+  unsupported <- setdiff(names(getMt_args), getMt_formals)
+  if (length(unsupported) > 0) {
     stop(
-      "Unsupported getMt signature: expected argument 'MEs_col' or 'MEs'. ",
-      "Current getMt arguments: ", paste(getMt_formals, collapse = ", "),
+      "Unsupported getMt signature. Current getMt arguments: ",
+      paste(getMt_formals, collapse = ", "),
+      "; attempted arguments: ", paste(names(getMt_args), collapse = ", "),
       call. = FALSE
     )
   }
+  
+  do.call(getMt, getMt_args)
+}
+
+call_getKME <- function(datExpr, moduleColors, MEs_col = NULL) {
+  getKME_formals <- names(formals(getKME))
+  getKME_args <- list(
+    datExpr = datExpr,
+    moduleColors = moduleColors
+  )
+  
+  # Different ShinyWGCNA builds use different KME signatures.
+  # Only pass MEs_col / MEs when that argument exists.
+  if ("MEs_col" %in% getKME_formals) {
+    getKME_args$MEs_col <- MEs_col
+  } else if ("MEs" %in% getKME_formals) {
+    getKME_args$MEs <- MEs_col
+  }
+  
+  unsupported <- setdiff(names(getKME_args), getKME_formals)
+  if (length(unsupported) > 0) {
+    stop(
+      "Unsupported getKME signature. Current getKME arguments: ",
+      paste(getKME_formals, collapse = ", "),
+      "; attempted arguments: ", paste(names(getKME_args), collapse = ", "),
+      call. = FALSE
+    )
+  }
+  
+  do.call(getKME, getKME_args)
 }
 
 # 01. UI =========================
@@ -880,9 +919,6 @@ ui <- shinyUI(
 )## UI
 
 server <- function(input, output, session){
-  session$onSessionEnded(function() {
-    stopApp()
-  })
   observeEvent(input$toggleSidebar, {
     shinyjs::toggle(id = "Sidebar")
   })
@@ -1255,66 +1291,165 @@ server <- function(input, output, session){
   })
   
   
-  observeEvent(
-    input$starttrait,
-    {
-      trait_data <- tryCatch(
-        phen(),
-        error = function(e) {
-          showNotification(conditionMessage(e), type = "error")
-          NULL
-        }
-      )
-      if(is.null(trait_data)){return()}
-      if(is.null(exp.ds$table2)){return()}
-      if(is.null(exp.ds$MEs_col)){return()}
-      if(is.null(exp.ds$nSamples)){return()}
-      if(is.null(exp.ds$moduleColors)){return()}
-      if (ncol(trait_data) == 2) {
-        x <- trait_data
-        Tcol = as.character(unique(x[,2]))
-        b <- list()
-        for (i in 1:length(Tcol)) {
-          b[[i]] = data.frame(row.names = x[,1],
-                              levels = ifelse(x[,2] == Tcol[i],1,0))
-        }
-        c <- bind_cols(b)
-        c <- data.frame(row.names = x$name,
-                        c)
-        colnames(c) = Tcol
-        rownames(c) = trait_data[,1]
-        exp.ds$phen<- c
-      } else {
-        exp.ds$phen = data.frame(row.names = trait_data[,1],
-                                 trait_data[,-1])
+  observeEvent(input$starttrait, {
+    if (is.null(input$traitData)) {
+      showNotification("请先上传 trait matrix。", type = "error", duration = NULL)
+      return()
+    }
+    if (is.null(exp.ds$table2)) {
+      showNotification("请先完成 Data import and cleaning。", type = "error", duration = NULL)
+      return()
+    }
+    if (is.null(exp.ds$MEs_col) || is.null(exp.ds$moduleColors) || is.null(exp.ds$nSamples)) {
+      showNotification("请先完成 Module-net 网络构建。", type = "error", duration = NULL)
+      return()
+    }
+    
+    trait_error <- NULL
+    trait_data <- tryCatch(
+      read_trait_matrix(input$traitData$datapath),
+      error = function(e) {
+        trait_error <<- conditionMessage(e)
+        NULL
       }
-      exp.ds$phen =  exp.ds$phen[match(rownames(exp.ds$table2),rownames(exp.ds$phen)),]
-      exp.ds$traitout = call_getMt(phenotype = exp.ds$phen, MEs_col = exp.ds$MEs_col,
-                                   nSamples = exp.ds$nSamples, moduleColors = exp.ds$moduleColors, datExpr = exp.ds$table2)
-      exp.ds$xangle = as.numeric(input$xangle)
-      exp.ds$c_min = as.character(input$colormin)
-      exp.ds$c_mid = as.character(input$colormid)
-      exp.ds$c_max = as.character(input$colormax)
-      exp.ds$modTraitCor = exp.ds$traitout$modTraitCor
-      exp.ds$modTraitP = exp.ds$traitout$modTraitP
-      exp.ds$textMatrix = exp.ds$traitout$textMatrix
-      exp.ds$KME = getKME(datExpr = exp.ds$table2,moduleColors = exp.ds$moduleColors,MEs_col = exp.ds$MEs_col)
-      exp.ds$mod_color = gsub(pattern = "^..",replacement = "",rownames(exp.ds$modTraitCor))
-      exp.ds$mod_color_anno = setNames(exp.ds$mod_color,rownames(exp.ds$modTraitCor))
-      exp.ds$Left_anno = rowAnnotation(
-        Module = rownames(exp.ds$modTraitCor),
-        col = list(
-          Module = exp.ds$mod_color_anno
+    )
+    
+    if (is.null(trait_data)) {
+      showNotification(trait_error, type = "error", duration = NULL)
+      return()
+    }
+    
+    sample_col <- trait_data[[1]]
+    trait_mat <- trait_data[, -1, drop = FALSE]
+    rownames(trait_mat) <- sample_col
+    
+    if (anyDuplicated(rownames(trait_mat))) {
+      showNotification("trait matrix 第一列 sample_id 有重复值。", type = "error", duration = NULL)
+      return()
+    }
+    
+    expr_samples <- rownames(exp.ds$table2)
+    trait_samples <- rownames(trait_mat)
+    missing_in_trait <- setdiff(expr_samples, trait_samples)
+    extra_in_trait <- setdiff(trait_samples, expr_samples)
+    
+    message("Expression samples: ", paste(expr_samples, collapse = ", "))
+    message("Trait samples: ", paste(trait_samples, collapse = ", "))
+    
+    if (length(missing_in_trait) > 0) {
+      showNotification(
+        paste0(
+          "表达矩阵中有样本在 trait matrix 里找不到：",
+          paste(head(missing_in_trait, 10), collapse = ", ")
         ),
-        show_legend = F,
-        show_annotation_name = F
+        type = "error",
+        duration = NULL
+      )
+      return()
+    }
+    
+    if (length(extra_in_trait) > 0) {
+      showNotification(
+        paste0(
+          "trait matrix 里有额外样本，将被忽略：",
+          paste(head(extra_in_trait, 10), collapse = ", ")
+        ),
+        type = "warning",
+        duration = 8
       )
     }
-  )
+    
+    trait_mat <- trait_mat[expr_samples, , drop = FALSE]
+    
+    bad_trait_cols <- names(trait_mat)[
+      vapply(trait_mat, function(x) all(is.na(x)), logical(1))
+    ]
+    if (length(bad_trait_cols) > 0) {
+      showNotification(
+        paste0(
+          "这些 trait 列全部是 NA，通常是字符型表型没有编码成数字：",
+          paste(bad_trait_cols, collapse = ", ")
+        ),
+        type = "error",
+        duration = NULL
+      )
+      return()
+    }
+    
+    if (anyNA(trait_mat)) {
+      showNotification(
+        "trait matrix 匹配后仍有 NA，请检查空值、非数字字符或样本名。",
+        type = "error",
+        duration = NULL
+      )
+      return()
+    }
+    
+    exp.ds$phen <- trait_mat
+    
+    mt_error <- NULL
+    exp.ds$traitout <- tryCatch(
+      call_getMt(
+        phenotype = exp.ds$phen,
+        MEs_col = exp.ds$MEs_col,
+        nSamples = exp.ds$nSamples,
+        moduleColors = exp.ds$moduleColors,
+        datExpr = exp.ds$table2
+      ),
+      error = function(e) {
+        mt_error <<- conditionMessage(e)
+        NULL
+      }
+    )
+    if (is.null(exp.ds$traitout)) {
+      showNotification(paste0("getMt failed: ", mt_error), type = "error", duration = NULL)
+      return()
+    }
+    
+    exp.ds$xangle <- as.numeric(input$xangle)
+    exp.ds$c_min <- as.character(input$colormin)
+    exp.ds$c_mid <- as.character(input$colormid)
+    exp.ds$c_max <- as.character(input$colormax)
+    exp.ds$modTraitCor <- exp.ds$traitout$modTraitCor
+    exp.ds$modTraitP <- exp.ds$traitout$modTraitP
+    exp.ds$textMatrix <- exp.ds$traitout$textMatrix
+    
+    kme_error <- NULL
+    exp.ds$KME <- tryCatch(
+      call_getKME(
+        datExpr = exp.ds$table2,
+        moduleColors = exp.ds$moduleColors,
+        MEs_col = exp.ds$MEs_col
+      ),
+      error = function(e) {
+        kme_error <<- conditionMessage(e)
+        NULL
+      }
+    )
+    if (is.null(exp.ds$KME)) {
+      showNotification(paste0("getKME failed: ", kme_error), type = "error", duration = NULL)
+      return()
+    }
+    
+    exp.ds$mod_color <- gsub(pattern = "^..", replacement = "", rownames(exp.ds$modTraitCor))
+    exp.ds$mod_color_anno <- setNames(exp.ds$mod_color, rownames(exp.ds$modTraitCor))
+    exp.ds$Left_anno <- rowAnnotation(
+      Module = rownames(exp.ds$modTraitCor),
+      col = list(Module = exp.ds$mod_color_anno),
+      show_legend = FALSE,
+      show_annotation_name = FALSE
+    )
+    
+    updateSelectInput(session, "smodule", choices = exp.ds$mod_color)
+    updateSelectInput(session, "hubmodule", choices = exp.ds$mod_color)
+    updateSelectInput(session, "strait", choices = colnames(exp.ds$modTraitP))
+    updateSelectInput(session, "hubtrait", choices = colnames(exp.ds$modTraitP))
+    
+    showNotification("Module-trait analysis finished.", type = "message")
+  })
   
   output$mtplot = renderPlot({
     input$starttrait
-    if(is.null(phen())){return()}
     if(is.null(exp.ds$phen)){return()}
     if(is.null(exp.ds$modTraitCor)){return()}
     if(is.null(exp.ds$textMatrix)){return()}
@@ -1347,7 +1482,6 @@ server <- function(input, output, session){
   
   output$traitmat = DT::renderDataTable({
     input$starttrait
-    if(is.null(phen())){return()}
     if(is.null(exp.ds$phen)){return()}
     if(is.null(exp.ds$modTraitCor)){return()}
     as.data.frame(exp.ds$modTraitCor)
@@ -1355,7 +1489,6 @@ server <- function(input, output, session){
   
   output$traitp = DT::renderDataTable({
     input$starttrait
-    if(is.null(phen())){return()}
     if(is.null(exp.ds$phen)){return()}
     if(is.null(exp.ds$modTraitP)){return()}
     as.data.frame(exp.ds$modTraitP)
@@ -1363,30 +1496,43 @@ server <- function(input, output, session){
   
   output$KME = DT::renderDataTable({
     input$starttrait
-    if(is.null(phen())){return()}
     if(is.null(exp.ds$phen)){return()}
     if(is.null(exp.ds$KME)){return()}
     as.data.frame(exp.ds$KME)
   })
   s_mod = reactive({
-    gsub(pattern = "^..",replacement = "",rownames(exp.ds$modTraitP))
+    if (is.null(exp.ds$modTraitP)) {
+      return(character(0))
+    }
+    gsub(pattern = "^..", replacement = "", rownames(exp.ds$modTraitP))
   })
   observe({
-    updateSelectInput(session, "smodule",choices = s_mod())
+    choices <- s_mod()
+    if (length(choices) > 0) {
+      updateSelectInput(session, "smodule", choices = choices)
+    }
   })
   
   s_trait = reactive({
+    if (is.null(exp.ds$modTraitP)) {
+      return(character(0))
+    }
     colnames(exp.ds$modTraitP)
   })
   observe({
-    updateSelectInput(session, "strait",choices = s_trait())
+    choices <- s_trait()
+    if (length(choices) > 0) {
+      updateSelectInput(session, "strait", choices = choices)
+    }
   })
   
   observeEvent(
     input$InterMode,
     {
-      if(is.null(phen())){return()}
-      if(is.null(exp.ds$phen)){return()}
+      if(is.null(exp.ds$phen)){
+        showNotification("请先完成 Module-trait analysis。", type = "error", duration = NULL)
+        return()
+      }
       if(is.null(exp.ds$table2)){return()}
       if(is.null(exp.ds$MEs_col)){return()}
       if(is.null(exp.ds$nSamples)){return()}
@@ -1443,11 +1589,17 @@ server <- function(input, output, session){
   })
   
   observe({
-    updateSelectInput(session, "hubmodule",choices = s_mod())
+    choices <- s_mod()
+    if (length(choices) > 0) {
+      updateSelectInput(session, "hubmodule", choices = choices)
+    }
   })
   
   observe({
-    updateSelectInput(session, "hubtrait",choices = s_trait())
+    choices <- s_trait()
+    if (length(choices) > 0) {
+      updateSelectInput(session, "hubtrait", choices = choices)
+    }
   })
   
   observeEvent(
