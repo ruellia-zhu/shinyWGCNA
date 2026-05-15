@@ -2,9 +2,10 @@
 #	prj: shiny app
 #	Assignment: WGCNA by click shiny app
 # Maintainer : Yuntao Zhu
-# Update date: 2026/05/08
+# Update date: 2026/05/15
 # Update V3.0: configure WGCNA server threads, support FPKM/TPM labels, restore cleaned genes, and add TOMplot
 # Update V3.2: fixed bugs when shinyWGCNA ver = 0.1.2
+# Update V3.3: support CSV/tab-delimited/XLSX uploads, refresh FPKM/TPM/CPM labels, and add AGENT.md
 ###############################
 # dplyr::select is assigned after dplyr is installed and loaded.
 ### You must set this before app is loaded, or hub gene will not work - by yuntao
@@ -36,6 +37,7 @@ if (!require('patchwork')) install.packages('patchwork');
 if (!require('tidyverse')) install.packages('tidyverse');
 if (!require('shinyjqui')) install.packages('shinyjqui');
 if (!require('colourpicker')) install.packages('colourpicker');
+if (!require('readxl')) install.packages('readxl');
 suppressMessages(library(devtools))
 if (!require('ShinyWGCNA')) devtools::install_github("ShawnWx2019/WGCNAShinyFun", ref = "master", upgrade = "never");
 suppressMessages(library(ShinyWGCNA))
@@ -68,21 +70,22 @@ suppressMessages(library(tidyverse))
 suppressMessages(library(shinyjqui))
 suppressMessages(library(ggpubr))
 suppressMessages(library(dplyr))
+suppressMessages(library(readxl))
 ensure_dplyr_select <- function() {
   assign("select", dplyr::select, envir = .GlobalEnv)
-  
+
   if ("ShinyWGCNA" %in% loadedNamespaces()) {
     shiny_wgcna_ns <- asNamespace("ShinyWGCNA")
     hubgenes_uses_select <- exists("hubgenes", envir = shiny_wgcna_ns, inherits = FALSE) &&
       any(grepl("(^|[^:[:alnum:]_.])select\\s*\\(",
                 deparse(get("hubgenes", envir = shiny_wgcna_ns)),
                 perl = TRUE))
-    
+
     if (hubgenes_uses_select && exists("select", envir = shiny_wgcna_ns, inherits = FALSE)) {
       assignInNamespace("select", dplyr::select, ns = "ShinyWGCNA")
     }
   }
-  
+
   invisible(dplyr::select)
 }
 
@@ -102,171 +105,184 @@ enableWGCNAThreads(nThreads = 20)
 # functions =========================
 
 
-read_expression_matrix <- function(datapath) {
-  if (is.null(datapath) || !file.exists(datapath)) {
-    stop("No expression matrix file was uploaded.", call. = FALSE)
-  }
-  
-  raw_head <- readBin(datapath, what = "raw", n = 4096)
-  file_encoding <- ""
+clean_bom <- function(x) {
+  x <- as.character(x)
+  x <- sub("^\ufeff", "", x)
+  sub("^ï»¿", "", x)
+}
+
+detect_text_encoding <- function(raw_head) {
   if (length(raw_head) >= 2 && identical(raw_head[1:2], as.raw(c(0xff, 0xfe)))) {
-    file_encoding <- "UTF-16LE"
-  } else if (length(raw_head) >= 2 && identical(raw_head[1:2], as.raw(c(0xfe, 0xff)))) {
-    file_encoding <- "UTF-16BE"
-  } else if (length(raw_head) >= 3 && identical(raw_head[1:3], as.raw(c(0xef, 0xbb, 0xbf)))) {
-    file_encoding <- "UTF-8-BOM"
-  } else if (length(raw_head) >= 20 && mean(raw_head[seq(2, length(raw_head), by = 2)] == as.raw(0)) > 0.25) {
-    file_encoding <- "UTF-16LE"
-  } else if (length(raw_head) >= 20 && mean(raw_head[seq(1, length(raw_head), by = 2)] == as.raw(0)) > 0.25) {
-    file_encoding <- "UTF-16BE"
+    return("UTF-16LE")
   }
-  
-  preview_con <- if (nzchar(file_encoding)) file(datapath, open = "r", encoding = file_encoding) else file(datapath, open = "r")
-  on.exit(close(preview_con), add = TRUE)
-  preview_lines <- readLines(preview_con, n = 20, warn = FALSE)
-  preview_lines <- preview_lines[nzchar(trimws(preview_lines))]
-  if (length(preview_lines) == 0) {
-    stop("The uploaded expression matrix is empty.", call. = FALSE)
+  if (length(raw_head) >= 2 && identical(raw_head[1:2], as.raw(c(0xfe, 0xff)))) {
+    return("UTF-16BE")
   }
-  
-  count_delimiter <- function(x, delimiter) {
-    matches <- gregexpr(delimiter, x, fixed = TRUE)[[1]]
-    if (length(matches) == 1 && matches[1] == -1L) 0L else length(matches)
+  if (length(raw_head) >= 3 && identical(raw_head[1:3], as.raw(c(0xef, 0xbb, 0xbf)))) {
+    return("UTF-8-BOM")
   }
-  header_line <- preview_lines[1]
-  delimiter_counts <- c(
-    tab = count_delimiter(header_line, "\t"),
-    comma = count_delimiter(header_line, ","),
-    semicolon = count_delimiter(header_line, ";")
-  )
-  sep <- switch(names(which.max(delimiter_counts)), tab = "\t", comma = ",", semicolon = ";")
-  if (max(delimiter_counts) == 0) {
-    stop("Could not detect a tab, comma, or semicolon delimiter in the expression matrix.", call. = FALSE)
+  if (length(raw_head) >= 20 && mean(raw_head[seq(2, length(raw_head), by = 2)] == as.raw(0)) > 0.25) {
+    return("UTF-16LE")
   }
-  
-  expr <- tryCatch(
-    read.table(
-      file = datapath,
-      sep = sep,
-      header = TRUE,
-      stringsAsFactors = FALSE,
-      check.names = FALSE,
-      quote = "\"",
-      comment.char = "",
-      fileEncoding = file_encoding
-    ),
-    error = function(e) {
-      stop(paste("Failed to read the expression matrix:", conditionMessage(e)), call. = FALSE)
+  if (length(raw_head) >= 20 && mean(raw_head[seq(1, length(raw_head), by = 2)] == as.raw(0)) > 0.25) {
+    return("UTF-16BE")
+  }
+  ""
+}
+
+count_delimiter <- function(x, delimiter) {
+  matches <- gregexpr(delimiter, x, fixed = TRUE)[[1]]
+  if (length(matches) == 1 && matches[1] == -1L) 0L else length(matches)
+}
+
+is_xlsx_upload <- function(datapath, filename = NULL, raw_head = raw()) {
+  file_source <- if (!is.null(filename) && length(filename) == 1 && nzchar(filename)) filename else datapath
+  file_ext <- tolower(tools::file_ext(file_source))
+  has_xlsx_magic <- length(raw_head) >= 4 &&
+    identical(raw_head[1:4], as.raw(c(0x50, 0x4b, 0x03, 0x04)))
+  identical(file_ext, "xlsx") || has_xlsx_magic
+}
+
+read_uploaded_table <- function(datapath, filename = NULL, table_name = "table") {
+  if (is.null(datapath) || !file.exists(datapath)) {
+    stop(paste("No", table_name, "file was uploaded."), call. = FALSE)
+  }
+
+  raw_head <- readBin(datapath, what = "raw", n = 4096)
+  if (is_xlsx_upload(datapath, filename, raw_head)) {
+    xlsx_path <- datapath
+    if (!identical(tolower(tools::file_ext(datapath)), "xlsx")) {
+      xlsx_path <- tempfile(fileext = ".xlsx")
+      if (!file.copy(datapath, xlsx_path, overwrite = TRUE)) {
+        stop(paste("Failed to prepare the uploaded", table_name, "xlsx file."), call. = FALSE)
+      }
+      on.exit(unlink(xlsx_path), add = TRUE)
     }
-  )
-  
-  names(expr) <- sub("^\\ufeff", "", trimws(names(expr)))
-  expr <- expr[, !vapply(expr, function(x) all(is.na(x) | trimws(as.character(x)) == ""), logical(1)), drop = FALSE]
-  expr <- expr[!apply(expr, 1, function(x) all(is.na(x) | trimws(as.character(x)) == "")), , drop = FALSE]
-  
+
+    tbl <- tryCatch(
+      as.data.frame(
+        readxl::read_xlsx(
+          path = xlsx_path,
+          sheet = 1,
+          col_names = TRUE,
+          .name_repair = "minimal"
+        ),
+        stringsAsFactors = FALSE,
+        check.names = FALSE
+      ),
+      error = function(e) {
+        stop(paste("Failed to read the", table_name, "xlsx file:", conditionMessage(e)), call. = FALSE)
+      }
+    )
+
+    attr(tbl, "file_type") <- "xlsx"
+    attr(tbl, "delimiter") <- NA_character_
+    attr(tbl, "encoding") <- "xlsx"
+  } else {
+    file_encoding <- detect_text_encoding(raw_head)
+    preview_con <- if (nzchar(file_encoding)) file(datapath, open = "r", encoding = file_encoding) else file(datapath, open = "r")
+    on.exit(close(preview_con), add = TRUE)
+    preview_lines <- readLines(preview_con, n = 20, warn = FALSE)
+    preview_lines <- preview_lines[nzchar(trimws(preview_lines))]
+    if (length(preview_lines) == 0) {
+      stop(paste("The uploaded", table_name, "file is empty."), call. = FALSE)
+    }
+
+    delimiter_counts <- c(
+      tab = count_delimiter(preview_lines[1], "\t"),
+      comma = count_delimiter(preview_lines[1], ","),
+      semicolon = count_delimiter(preview_lines[1], ";")
+    )
+    if (max(delimiter_counts) == 0) {
+      stop(paste("Could not detect a tab, comma, or semicolon delimiter in the", table_name, "file."), call. = FALSE)
+    }
+    sep <- switch(names(which.max(delimiter_counts)), tab = "\t", comma = ",", semicolon = ";")
+
+    tbl <- tryCatch(
+      read.table(
+        file = datapath,
+        sep = sep,
+        header = TRUE,
+        stringsAsFactors = FALSE,
+        check.names = FALSE,
+        quote = "\"",
+        comment.char = "",
+        fileEncoding = file_encoding
+      ),
+      error = function(e) {
+        stop(paste("Failed to read the", table_name, "file:", conditionMessage(e)), call. = FALSE)
+      }
+    )
+
+    attr(tbl, "file_type") <- "text"
+    attr(tbl, "delimiter") <- switch(sep, "\t" = "tab", "," = "comma", ";" = "semicolon")
+    attr(tbl, "encoding") <- if (nzchar(file_encoding)) file_encoding else "native/UTF-8"
+  }
+
+  file_type <- attr(tbl, "file_type")
+  delimiter <- attr(tbl, "delimiter")
+  encoding <- attr(tbl, "encoding")
+
+  names(tbl) <- clean_bom(trimws(names(tbl)))
+  if (ncol(tbl) > 0) {
+    tbl <- tbl[, !vapply(tbl, function(x) all(is.na(x) | trimws(as.character(x)) == ""), logical(1)), drop = FALSE]
+  }
+  if (nrow(tbl) > 0 && ncol(tbl) > 0) {
+    tbl <- tbl[!apply(tbl, 1, function(x) all(is.na(x) | trimws(as.character(x)) == "")), , drop = FALSE]
+  }
+  if (nrow(tbl) > 0 && ncol(tbl) > 0) {
+    tbl[[1]] <- clean_bom(trimws(as.character(tbl[[1]])))
+  }
+  attr(tbl, "file_type") <- file_type
+  attr(tbl, "delimiter") <- delimiter
+  attr(tbl, "encoding") <- encoding
+
+  tbl
+}
+
+convert_table_numeric_columns <- function(tbl, table_name = "table") {
+  if (ncol(tbl) >= 2) {
+    for (col in seq.int(2, ncol(tbl))) {
+      if (is.character(tbl[[col]])) {
+        tbl[[col]] <- trimws(tbl[[col]])
+        tbl[[col]][tbl[[col]] == ""] <- NA
+      }
+      tbl[[col]] <- suppressWarnings(as.numeric(tbl[[col]]))
+    }
+  }
+
+  if (ncol(tbl) < 2 || all(vapply(tbl[-1], function(x) all(is.na(x)), logical(1)))) {
+    stop(paste("No numeric columns were found in the", table_name, "file. Please check the file format."), call. = FALSE)
+  }
+
+  tbl
+}
+
+read_expression_matrix <- function(datapath, filename = NULL) {
+  expr <- read_uploaded_table(datapath, filename, table_name = "expression matrix")
+
   if (nrow(expr) == 0 || ncol(expr) < 3) {
     stop("The expression matrix must contain at least one gene column and two sample expression columns after parsing.", call. = FALSE)
   }
-  
-  for (col in seq.int(2, ncol(expr))) {
-    if (is.character(expr[[col]])) {
-      expr[[col]] <- trimws(expr[[col]])
-      expr[[col]][expr[[col]] == ""] <- NA
-    }
-    expr[[col]] <- suppressWarnings(as.numeric(expr[[col]]))
-  }
-  
-  if (all(vapply(expr[-1], function(x) all(is.na(x)), logical(1)))) {
-    stop("No numeric sample expression columns were found. Please check the file delimiter and encoding.", call. = FALSE)
-  }
-  
-  attr(expr, "delimiter") <- switch(sep, "\t" = "tab", "," = "comma", ";" = "semicolon")
-  attr(expr, "encoding") <- if (nzchar(file_encoding)) file_encoding else "native/UTF-8"
-  expr
+
+  convert_table_numeric_columns(expr, table_name = "expression matrix")
 }
 
 
-read_trait_matrix <- function(datapath) {
-  if (is.null(datapath) || !file.exists(datapath)) {
-    stop("请上传 trait matrix：第一列 sample_id，后续列为 trait", call. = FALSE)
-  }
-  
-  raw_head <- readBin(datapath, what = "raw", n = 4096)
-  file_encoding <- ""
-  if (length(raw_head) >= 2 && identical(raw_head[1:2], as.raw(c(0xff, 0xfe)))) {
-    file_encoding <- "UTF-16LE"
-  } else if (length(raw_head) >= 2 && identical(raw_head[1:2], as.raw(c(0xfe, 0xff)))) {
-    file_encoding <- "UTF-16BE"
-  } else if (length(raw_head) >= 3 && identical(raw_head[1:3], as.raw(c(0xef, 0xbb, 0xbf)))) {
-    file_encoding <- "UTF-8-BOM"
-  } else if (length(raw_head) >= 20 && mean(raw_head[seq(2, length(raw_head), by = 2)] == as.raw(0)) > 0.25) {
-    file_encoding <- "UTF-16LE"
-  } else if (length(raw_head) >= 20 && mean(raw_head[seq(1, length(raw_head), by = 2)] == as.raw(0)) > 0.25) {
-    file_encoding <- "UTF-16BE"
-  }
-  
-  preview_con <- if (nzchar(file_encoding)) file(datapath, open = "r", encoding = file_encoding) else file(datapath, open = "r")
-  on.exit(close(preview_con), add = TRUE)
-  preview_lines <- readLines(preview_con, n = 20, warn = FALSE)
-  preview_lines <- preview_lines[nzchar(trimws(preview_lines))]
-  if (length(preview_lines) == 0) {
-    stop("请上传 trait matrix：第一列 sample_id，后续列为 trait", call. = FALSE)
-  }
-  
-  count_delimiter <- function(x, delimiter) {
-    matches <- gregexpr(delimiter, x, fixed = TRUE)[[1]]
-    if (length(matches) == 1 && matches[1] == -1L) 0L else length(matches)
-  }
-  delimiter_counts <- c(
-    tab = count_delimiter(preview_lines[1], "\t"),
-    comma = count_delimiter(preview_lines[1], ","),
-    semicolon = count_delimiter(preview_lines[1], ";")
-  )
-  if (max(delimiter_counts) == 0) {
-    stop("请上传 trait matrix：第一列 sample_id，后续列为 trait", call. = FALSE)
-  }
-  sep <- switch(names(which.max(delimiter_counts)), tab = "\t", comma = ",", semicolon = ";")
-  
-  trait <- tryCatch(
-    read.table(
-      file = datapath,
-      sep = sep,
-      header = TRUE,
-      stringsAsFactors = FALSE,
-      check.names = FALSE,
-      quote = "\"",
-      comment.char = "",
-      fileEncoding = file_encoding
-    ),
-    error = function(e) {
-      stop(paste("Failed to read the trait matrix:", conditionMessage(e)), call. = FALSE)
-    }
-  )
-  
-  clean_bom <- function(x) sub("^ï»¿", "", sub("^﻿", "", x))
-  names(trait) <- clean_bom(trimws(names(trait)))
-  
+read_trait_matrix <- function(datapath, filename = NULL) {
+  trait <- read_uploaded_table(datapath, filename, table_name = "trait matrix")
   if (ncol(trait) < 2) {
     stop("请上传 trait matrix：第一列 sample_id，后续列为 trait", call. = FALSE)
   }
-  
-  trait[[1]] <- clean_bom(trimws(as.character(trait[[1]])))
-  for (col in seq.int(2, ncol(trait))) {
-    trait[[col]] <- trimws(as.character(trait[[col]]))
-    trait[[col]][trait[[col]] == ""] <- NA
-    trait[[col]] <- suppressWarnings(as.numeric(trait[[col]]))
-  }
-  
-  attr(trait, "delimiter") <- switch(sep, "\t" = "tab", "," = "comma", ";" = "semicolon")
-  attr(trait, "encoding") <- if (nzchar(file_encoding)) file_encoding else "native/UTF-8"
-  trait
+
+  convert_table_numeric_columns(trait, table_name = "trait matrix")
 }
 
 expression_matrix_error_message <- function(err) {
   HTML(paste0(
     '<font color = red><b>Expression matrix import failed:</b></font> ',
     htmltools::htmlEscape(conditionMessage(err)),
-    '<br/><font color = blue>Please upload a tab-delimited text/CSV file exported from Windows or Excel with genes in the first column and numeric samples in the remaining columns.</font>'
+    '<br/><font color = blue>Please upload a comma-delimited CSV, tab-delimited text, or XLSX file with genes in the first column and numeric samples in the remaining columns.</font>'
   ))
 }
 
@@ -275,7 +291,7 @@ expression_matrix_error_message <- function(err) {
 # method:   vst / raw / logarithm
 normalize_shinywgcna_datatype <- function(x) {
   x <- as.character(x)
-  if (x %in% c("FPKM", "TPM", "RPKM", "CPM", "FPKM/TPM/RPKM/CPM", "FPKM_TPM_RPKM_CPM")) {
+  if (x %in% c("FPKM", "TPM", "RPKM", "CPM", "FPKM/TPM/CPM", "FPKM/TPM/RPKM/CPM", "FPKM_TPM_CPM", "FPKM_TPM_RPKM_CPM")) {
     return("normalized count")
   }
   x
@@ -286,10 +302,10 @@ normalize_shinywgcna_method <- function(x) {
   if (x %in% c("varianceStabilizingTransformation", "vst")) {
     return("vst")
   }
-  if (x %in% c("rawFPKM", "raw")) {
+  if (x %in% c("rawFPKM", "raw_FPKM_TPM_CPM", "raw")) {
     return("raw")
   }
-  if (x %in% c("lgFPKM", "lgcpm", "logCPM", "logarithm")) {
+  if (x %in% c("lgFPKM", "lgcpm", "logCPM", "log10_FPKM_TPM_CPM", "logarithm")) {
     return("logarithm")
   }
   x
@@ -319,7 +335,7 @@ call_getMt <- function(phenotype, MEs_col = NULL, nSamples, moduleColors, datExp
     moduleColors = moduleColors,
     datExpr = datExpr
   )
-  
+
   # ShinyWGCNA 0.1.2 on some installations has getMt(phenotype, nSamples, moduleColors, datExpr).
   # Older / alternate builds may also expose MEs_col or MEs. Add it only when the function accepts it.
   if ("MEs_col" %in% getMt_formals) {
@@ -327,7 +343,7 @@ call_getMt <- function(phenotype, MEs_col = NULL, nSamples, moduleColors, datExp
   } else if ("MEs" %in% getMt_formals) {
     getMt_args$MEs <- MEs_col
   }
-  
+
   unsupported <- setdiff(names(getMt_args), getMt_formals)
   if (length(unsupported) > 0) {
     stop(
@@ -337,7 +353,7 @@ call_getMt <- function(phenotype, MEs_col = NULL, nSamples, moduleColors, datExp
       call. = FALSE
     )
   }
-  
+
   do.call(getMt, getMt_args)
 }
 
@@ -347,7 +363,7 @@ call_getKME <- function(datExpr, moduleColors, MEs_col = NULL) {
     datExpr = datExpr,
     moduleColors = moduleColors
   )
-  
+
   # Different ShinyWGCNA builds use different KME signatures.
   # Only pass MEs_col / MEs when that argument exists.
   if ("MEs_col" %in% getKME_formals) {
@@ -355,7 +371,7 @@ call_getKME <- function(datExpr, moduleColors, MEs_col = NULL) {
   } else if ("MEs" %in% getKME_formals) {
     getKME_args$MEs <- MEs_col
   }
-  
+
   unsupported <- setdiff(names(getKME_args), getKME_formals)
   if (length(unsupported) > 0) {
     stop(
@@ -365,23 +381,23 @@ call_getKME <- function(datExpr, moduleColors, MEs_col = NULL) {
       call. = FALSE
     )
   }
-  
+
   do.call(getKME, getKME_args)
 }
 
 # 01. UI =========================
 ## logo
 customLogo <- shinyDashboardLogoDIY(
-  
+
   boldText = "Interactive"
   ,mainText = "WGCNA with GUI"
   ,textSize = 14
-  ,badgeText = "v3.0"
+  ,badgeText = "V3.3"
   ,badgeTextColor = "white"
   ,badgeTextSize = 2
   ,badgeBackColor = "#40E0D0"
   ,badgeBorderRadius = 3
-  
+
 )
 
 ui <- shinyUI(
@@ -407,7 +423,7 @@ ui <- shinyUI(
                                 style = "color: #7a8788;font-size: 12px; font-style:Italic"),
                        helpText("Default is 20 threads. Lower values reduce server pressure; higher values may speed up large analyses but can affect other users.",
                                 style = "color: #7a8788;font-size: 12px; font-style:Italic"),
-                       
+
                      )# sidebarPanel
                  ),# div
                  mainPanel(
@@ -417,13 +433,7 @@ ui <- shinyUI(
                                 "Apply thread setting"),
                    p("Click the apply button before running WGCNA steps so the selected thread count is used by WGCNA.", style = "color: #000000;font-size: 16px; font-style:bold"),
                    p("WGCNA threads actually configured", style = "color: #000000;font-size: 24px; font-style:bold"),
-                   textOutput("current.wgcna.threads"),
-                   p("NOTE", style = "color: #000000;font-size: 24px; font-style:bold"),
-                   p("1. The old Windows-only R memory-limit adjustment has been removed because it is obsolete in modern R environments.", style = "color: #000000;font-size: 16px; font-style:bold"),
-                   p("2. This server-oriented setting controls the number of CPU threads WGCNA may use; it does not change the server memory limit.", style = "color: #000000;font-size: 16px; font-style:bold"),
-                   p("3. This app's primary content and original version is developed by Shawn Wang. You can attach Wang's original version in the URL below.", style = "color: #000000;font-size: 16px; font-style:bold"),
-                   p("4. This app has never been sold. ", style = "color: #000000;font-size: 16px; font-style:bold"),
-                   p("Shawn Wang's original version: https://github.com/ShawnWx2019/WGCNA-shinyApp")
+                   textOutput("current.wgcna.threads")
                  )
                ) # sidebarLayout
              ),##tabPanel
@@ -438,20 +448,20 @@ ui <- shinyUI(
                        fileInput(
                          inputId = "ExpMat",
                          label = "Upload expression matrix",
-                         accept = c(".txt",".csv",".xls")
+                         accept = c(".txt", ".tsv", ".csv", ".xlsx")
                        ),
-                       p("only accecpt Tab-delimited .txt, .csv and .xls file",
+                       p("Support comma-delimited CSV, tab-delimited text, and XLSX files.",
                          style = "color: #7a8788;font-size: 12px; font-style:Italic"),
                        radioButtons(
                          inputId = "format",
                          label = "Format",
                          choices = c(
                            count = "count",
-                           FPKM_TPM_RPKM_CPM = "normalized count"
+                           `FPKM/TPM/CPM` = "normalized count"
                          ),
                          selected = "normalized count"
                        ),
-                       p("Use normalized count for most data, e.g. FPKM, TPM",
+                       p("Use FPKM/TPM/CPM for normalized expression matrices.",
                          style = "color: #7a8788;font-size: 12px; font-style:Italic"),
                        radioButtons(
                          inputId = "networktype",
@@ -462,10 +472,8 @@ ui <- shinyUI(
                        selectInput(
                          inputId = "method1",
                          label = "Normalized method",
-                         choices = c(
-                           FPKM = "raw",
-                           log10_FPKM = "logarithm"
-                         ),
+                         choices = setNames(c("raw", "logarithm"),
+                                            c("FPKM/TPM/CPM", "log10(FPKM/TPM/CPM)")),
                          selected = "raw"
                        ),
                        HTML('<font color = #FF6347  size = 3.2><b>First Time filter</b></font>'),
@@ -509,7 +517,7 @@ ui <- shinyUI(
                                 htmlOutput("Inputcheck"),
                                 htmlOutput("filter1"),
                                 htmlOutput("filter2"),
-                                
+
                        ),
                        tabPanel(title = "Preview of Input",height = "500px",width = "100%",
                                 icon = icon("table"),
@@ -530,10 +538,10 @@ ui <- shinyUI(
                                   plotOutput("clustPlot")
                                 ),
                                 downloadButton("downfig1","Download")
-                                
+
                        )# tabPanel
                      )
-                     
+
                    )# fluidPage
                  )#mainPanel
                ) # sidebarLayout
@@ -561,7 +569,7 @@ ui <- shinyUI(
                          choices = c("Recommended","Customized"),
                          selected = "Recommended"
                        ),
-                       
+
                        sliderInput(
                          inputId = "PowerSelect",
                          label = "Final Power Selection",
@@ -592,8 +600,8 @@ ui <- shinyUI(
                                           value = 10),
                                 actionButton("adjust2","Set fig size"),
                                 downloadButton("downfig2","Download")
-                                
-                                
+
+
                        ),
                        tabPanel(title = "Information of sft table",height = "500px",width = "100%",
                                 icon = icon("table"),
@@ -613,7 +621,7 @@ ui <- shinyUI(
                                           value = 10),
                                 actionButton("adjust3","Set fig size"),
                                 downloadButton("downfig3","Download")
-                                
+
                        )## tabPanel
                      )## tabsetPanel
                    )## fluidPage
@@ -664,7 +672,7 @@ ui <- shinyUI(
                                    value = 10),
                          actionButton("adjust4","Set fig size"),
                          downloadButton("downfig4","Download"),
-                         
+
                          br(),
                          br(),
                          tableOutput("m2num")
@@ -708,7 +716,7 @@ ui <- shinyUI(
                          downloadButton("downtbl2","download")
                        )
                      )
-                     
+
                    )
                  )
                )
@@ -724,9 +732,9 @@ ui <- shinyUI(
                        fileInput(
                          inputId = "traitData",
                          label = "Upload trait matrix",
-                         accept = c(".txt", ".csv", ".tsv", ".xls")
+                         accept = c(".txt", ".tsv", ".csv", ".xlsx")
                        ),
-                       helpText("Trait matrix: the first column must be the sample ID; all following columns must be numeric traits."),
+                       helpText("Trait matrix: upload CSV, tab-delimited text, or XLSX. The first column must be the sample ID; all following columns must be numeric traits."),
                        colourpicker::colourInput(inputId = "colormin",
                                                  label = "Minimum",
                                                  value = "blue"),
@@ -927,7 +935,7 @@ ui <- shinyUI(
                  )
                )
              )##tabPanel
-             
+
   )## navbarPage
 )## UI
 
@@ -953,9 +961,9 @@ server <- function(input, output, session){
   data <- reactive({
     file1 <- input$ExpMat
     if(is.null(file1)){return()}
-    read_expression_matrix(file1$datapath)
+    read_expression_matrix(file1$datapath, file1$name)
   })
-  
+
   output$Inputcheck = renderUI({
     matrix_data <- tryCatch(data(), error = function(e) e)
     if(is.null(matrix_data)){return()}
@@ -963,10 +971,15 @@ server <- function(input, output, session){
       return(expression_matrix_error_message(matrix_data))
     }
     if(length(which(is.na(matrix_data))) == 0) {
+      detected_source <- if (identical(attr(matrix_data, "file_type"), "xlsx")) {
+        '<br/><font color = blue>Detected file type: <b>xlsx</b>.</font>'
+      } else {
+        paste0('<br/><font color = blue>Detected delimiter: <b>', attr(matrix_data, "delimiter"),
+               '</b>; detected encoding: <b>', attr(matrix_data, "encoding"), '</b>.</font>')
+      }
       HTML(paste0('<font color = red><b>
           Congratulations!,</b></font> There is no problem with your expression matrix format, please proceed to the next step',
-                  '<br/><font color = blue>Detected delimiter: <b>', attr(matrix_data, "delimiter"),
-                  '</b>; detected encoding: <b>', attr(matrix_data, "encoding"), '</b>.</font>'))
+                  detected_source))
     } else {
       HTML(
         '<font color = blue><b>Sorry!</b></font>
@@ -974,11 +987,11 @@ server <- function(input, output, session){
        '
       )
     }
-    
+
   })
-  
+
   ## set WGCNA threads
-  
+
   wgcna_thread <- reactiveValues(current = 20)
   output$show.wgcna.threads = renderText({
     paste(as.character(input$wgcna.threads), "threads")
@@ -992,9 +1005,9 @@ server <- function(input, output, session){
     wgcna_thread$current <- thread_count
     message(paste("WGCNA threads set to", thread_count))
   })
-  
-  
-  
+
+
+
   ## count number
   fmt = reactive({
     normalize_shinywgcna_datatype(input$format)
@@ -1004,12 +1017,12 @@ server <- function(input, output, session){
       updateSelectInput(session, "method1", choices = c(VST = "vst"), selected = "vst")
       updateTextInput(session,"RCcut",value = 10)
     } else {
-      updateSelectInput(session, "method1", choices = c(FPKM = "raw",
-                                                        log10_FPKM = "logarithm"),
+      updateSelectInput(session, "method1", choices = setNames(c("raw", "logarithm"),
+                                                               c("FPKM/TPM/CPM", "log10(FPKM/TPM/CPM)")),
                         selected = "raw")
       updateTextInput(session,"RCcut",value = 1)
     }
-    
+
   })
   mtd = reactive({
     normalize_shinywgcna_method(input$method1)
@@ -1017,7 +1030,7 @@ server <- function(input, output, session){
   networktype = reactive({
     as.character(input$networktype)
   })
-  
+
   sampP = reactive({
     as.numeric(input$SamPer)
   })
@@ -1047,7 +1060,7 @@ server <- function(input, output, session){
                 if (!is.null(exp.ds$restoreMessage) && nzchar(exp.ds$restoreMessage)) paste0('<font color = red> <b>Restore notice: </b> </font>',htmltools::htmlEscape(exp.ds$restoreMessage),'<br/>') else '',
                 '<font color = red> <b>Notice: </b> </font>',exp.ds$gnccheck))
   }
-  
+
   observeEvent(
     input$action1,
     {
@@ -1070,7 +1083,7 @@ server <- function(input, output, session){
       exp.ds$layout = as.character(input$treelayout)
       exp.ds$GNC = NULL
       exp.ds$gnccheck = NULL
-      
+
       output$filter1 = renderUI({
         input$action1
         p_mass = c("Processing step1, remove very low expressed genes",
@@ -1132,8 +1145,8 @@ server <- function(input, output, session){
       })
     }
   )
-  
-  
+
+
   ## summary num
   output$Inputbl = DT::renderDataTable({
     matrix_data <- tryCatch(data(), error = function(e) e)
@@ -1218,11 +1231,11 @@ server <- function(input, output, session){
     plot(exp.ds$param$sampleTree,main = "Sample clustering to detect outlier", sub = "", xlab = "")
   })
   ## download sample tree
-  
+
   rscut = reactive({
     as.numeric(input$CutoffR)
   })
-  
+
   observeEvent(
     input$Startsft,
     {
@@ -1240,7 +1253,7 @@ server <- function(input, output, session){
                          } else {
                            return()
                          }
-                         
+
                        }
                      })
         isolate(HTML(paste0('<font color = red> <b>The power recommended by WGCNA is:</b> </font><font color = bule><b>',exp.ds$sft$power,'</b></font> ','<br/>',
@@ -1248,8 +1261,8 @@ server <- function(input, output, session){
       })
     }
   )
-  
-  
+
+
   ## outsft
   output$sftplot = renderPlot({
     if(is.null(exp.ds$table2)){return()}
@@ -1295,12 +1308,12 @@ server <- function(input, output, session){
                        } else {
                          return()
                        }
-                       
+
                      }
                    })
     }
   )
-  
+
   output$sfttest = renderPlot({
     if(is.null(exp.ds$sft)){return()}
     input$Startcheck
@@ -1353,7 +1366,7 @@ server <- function(input, output, session){
                           marHeatmap = c(3,4,2,2), plotDendrograms = T,
                           xLabelsAngle = 90)
   })
-  
+
   observeEvent(input$StartTOMplot, {
     if(is.null(exp.ds$net)){return()}
     if(is.null(exp.ds$table2)){return()}
@@ -1368,7 +1381,7 @@ server <- function(input, output, session){
       exp.ds$tomGeneTree <- hclust(as.dist(exp.ds$tomDiss), method = "average")
     })
   })
-  
+
   output$tomplot = renderPlot({
     input$StartTOMplot
     if(is.null(exp.ds$tomDiss)){return()}
@@ -1378,22 +1391,22 @@ server <- function(input, output, session){
             main = "Network heatmap plot, all genes",
             col = tomplot_light_palette(100))
   })
-  
+
   output$g2m = DT::renderDataTable({
     input$Startnet
     if(is.null(exp.ds$net)){return()}
     exp.ds$Gene2module
   })
-  
+
   phen <- reactive({
     file2 <- input$traitData
     if(is.null(file2)){return()}
-    trait <- read_trait_matrix(file2$datapath)
+    trait <- read_trait_matrix(file2$datapath, file2$name)
     validate(need(ncol(trait) >= 2, "请上传 trait matrix：第一列 sample_id，后续列为 trait"))
     trait
   })
-  
-  
+
+
   observeEvent(input$starttrait, {
     if (is.null(input$traitData)) {
       showNotification("请先上传 trait matrix。", type = "error", duration = NULL)
@@ -1407,38 +1420,38 @@ server <- function(input, output, session){
       showNotification("请先完成 Module-net 网络构建。", type = "error", duration = NULL)
       return()
     }
-    
+
     trait_error <- NULL
     trait_data <- tryCatch(
-      read_trait_matrix(input$traitData$datapath),
+      read_trait_matrix(input$traitData$datapath, input$traitData$name),
       error = function(e) {
         trait_error <<- conditionMessage(e)
         NULL
       }
     )
-    
+
     if (is.null(trait_data)) {
       showNotification(trait_error, type = "error", duration = NULL)
       return()
     }
-    
+
     sample_col <- trait_data[[1]]
     trait_mat <- trait_data[, -1, drop = FALSE]
     rownames(trait_mat) <- sample_col
-    
+
     if (anyDuplicated(rownames(trait_mat))) {
       showNotification("trait matrix 第一列 sample_id 有重复值。", type = "error", duration = NULL)
       return()
     }
-    
+
     expr_samples <- rownames(exp.ds$table2)
     trait_samples <- rownames(trait_mat)
     missing_in_trait <- setdiff(expr_samples, trait_samples)
     extra_in_trait <- setdiff(trait_samples, expr_samples)
-    
+
     message("Expression samples: ", paste(expr_samples, collapse = ", "))
     message("Trait samples: ", paste(trait_samples, collapse = ", "))
-    
+
     if (length(missing_in_trait) > 0) {
       showNotification(
         paste0(
@@ -1450,7 +1463,7 @@ server <- function(input, output, session){
       )
       return()
     }
-    
+
     if (length(extra_in_trait) > 0) {
       showNotification(
         paste0(
@@ -1461,9 +1474,9 @@ server <- function(input, output, session){
         duration = 8
       )
     }
-    
+
     trait_mat <- trait_mat[expr_samples, , drop = FALSE]
-    
+
     bad_trait_cols <- names(trait_mat)[
       vapply(trait_mat, function(x) all(is.na(x)), logical(1))
     ]
@@ -1478,7 +1491,7 @@ server <- function(input, output, session){
       )
       return()
     }
-    
+
     if (anyNA(trait_mat)) {
       showNotification(
         "trait matrix 匹配后仍有 NA，请检查空值、非数字字符或样本名。",
@@ -1487,9 +1500,9 @@ server <- function(input, output, session){
       )
       return()
     }
-    
+
     exp.ds$phen <- trait_mat
-    
+
     mt_error <- NULL
     exp.ds$traitout <- tryCatch(
       call_getMt(
@@ -1508,7 +1521,7 @@ server <- function(input, output, session){
       showNotification(paste0("getMt failed: ", mt_error), type = "error", duration = NULL)
       return()
     }
-    
+
     exp.ds$xangle <- as.numeric(input$xangle)
     exp.ds$c_min <- as.character(input$colormin)
     exp.ds$c_mid <- as.character(input$colormid)
@@ -1516,7 +1529,7 @@ server <- function(input, output, session){
     exp.ds$modTraitCor <- exp.ds$traitout$modTraitCor
     exp.ds$modTraitP <- exp.ds$traitout$modTraitP
     exp.ds$textMatrix <- exp.ds$traitout$textMatrix
-    
+
     kme_error <- NULL
     exp.ds$KME <- tryCatch(
       call_getKME(
@@ -1533,7 +1546,7 @@ server <- function(input, output, session){
       showNotification(paste0("getKME failed: ", kme_error), type = "error", duration = NULL)
       return()
     }
-    
+
     exp.ds$mod_color <- gsub(pattern = "^..", replacement = "", rownames(exp.ds$modTraitCor))
     exp.ds$mod_color_anno <- setNames(exp.ds$mod_color, rownames(exp.ds$modTraitCor))
     exp.ds$Left_anno <- rowAnnotation(
@@ -1542,15 +1555,15 @@ server <- function(input, output, session){
       show_legend = FALSE,
       show_annotation_name = FALSE
     )
-    
+
     updateSelectInput(session, "smodule", choices = exp.ds$mod_color)
     updateSelectInput(session, "hubmodule", choices = exp.ds$mod_color)
     updateSelectInput(session, "strait", choices = colnames(exp.ds$modTraitP))
     updateSelectInput(session, "hubtrait", choices = colnames(exp.ds$modTraitP))
-    
+
     showNotification("Module-trait analysis finished.", type = "message")
   })
-  
+
   output$mtplot = renderPlot({
     input$starttrait
     if(is.null(exp.ds$phen)){return()}
@@ -1578,25 +1591,25 @@ server <- function(input, output, session){
       column_title_gp = gpar(fontsize = 15, fontface = "bold"),
       col = colorRamp2(c(-1, 0, 1), c(exp.ds$c_min, exp.ds$c_mid, exp.ds$c_max))
     )
-    
+
   })
-  
-  
-  
+
+
+
   output$traitmat = DT::renderDataTable({
     input$starttrait
     if(is.null(exp.ds$phen)){return()}
     if(is.null(exp.ds$modTraitCor)){return()}
     as.data.frame(exp.ds$modTraitCor)
   })
-  
+
   output$traitp = DT::renderDataTable({
     input$starttrait
     if(is.null(exp.ds$phen)){return()}
     if(is.null(exp.ds$modTraitP)){return()}
     as.data.frame(exp.ds$modTraitP)
   })
-  
+
   output$KME = DT::renderDataTable({
     input$starttrait
     if(is.null(exp.ds$phen)){return()}
@@ -1615,7 +1628,7 @@ server <- function(input, output, session){
       updateSelectInput(session, "smodule", choices = choices)
     }
   })
-  
+
   s_trait = reactive({
     if (is.null(exp.ds$modTraitP)) {
       return(character(0))
@@ -1628,7 +1641,7 @@ server <- function(input, output, session){
       updateSelectInput(session, "strait", choices = choices)
     }
   })
-  
+
   observeEvent(
     input$InterMode,
     {
@@ -1647,10 +1660,10 @@ server <- function(input, output, session){
       exp.ds$st = as.character(input$strait)
       exp.ds$Heatmap = moduleheatmap(datExpr = exp.ds$table2,MEs = exp.ds$MEs_col,which.module = exp.ds$sml,
                                      moduleColors = exp.ds$moduleColors)
-      
+
     }
   )
-  
+
   output$GSCon = renderPlot({
     input$InterMode
     if(is.null(exp.ds$st)){return()}
@@ -1664,7 +1677,7 @@ server <- function(input, output, session){
                    traitData = exp.ds$phen,moduleColors = exp.ds$moduleColors,
                    geneModuleMembership = exp.ds$MM,nSamples = exp.ds$nSamples)
   })
-  
+
   output$heatmap = renderPlot({
     input$InterMode
     if(is.null(exp.ds$st)){return()}
@@ -1672,7 +1685,7 @@ server <- function(input, output, session){
     if(is.null(exp.ds$Heatmap)){return()}
     exp.ds$Heatmap
   })
-  
+
   output$GSMM.all = renderPlot({
     input$InterMode
     if(is.null(exp.ds$st)){return()}
@@ -1690,21 +1703,21 @@ server <- function(input, output, session){
               MEs = exp.ds$MEs_col,
               nSamples = exp.ds$nSamples)
   })
-  
+
   observe({
     choices <- s_mod()
     if (length(choices) > 0) {
       updateSelectInput(session, "hubmodule", choices = choices)
     }
   })
-  
+
   observe({
     choices <- s_trait()
     if (length(choices) > 0) {
       updateSelectInput(session, "hubtrait", choices = choices)
     }
   })
-  
+
   observeEvent(
     input$starthub,
     {
@@ -1730,7 +1743,7 @@ server <- function(input, output, session){
       )
     }
   )
-  
+
   observeEvent(
     input$threadd,
     {
@@ -1753,7 +1766,7 @@ server <- function(input, output, session){
     if(is.null(exp.ds$hub.all)){return()}
     exp.ds$hub.all$hub1
   })
-  
+
   output$kMEhub = DT::renderDataTable({
     input$starthub
     if(is.null(exp.ds$hubml)){return()}
@@ -1763,7 +1776,7 @@ server <- function(input, output, session){
     if(is.null(exp.ds$hub.all)){return()}
     exp.ds$hub.all$hub3
   })
-  
+
   output$edgeFile = DT::renderDataTable({
     input$threadd
     if(is.null(exp.ds$hubml)){return()}
@@ -1771,7 +1784,7 @@ server <- function(input, output, session){
     if(is.null(exp.ds$cyt)){return()}
     exp.ds$cyt[[1]]
   })
-  
+
   output$nodeFile = DT::renderDataTable({
     input$threadd
     if(is.null(exp.ds$hubml)){return()}
@@ -1779,10 +1792,10 @@ server <- function(input, output, session){
     if(is.null(exp.ds$cyt)){return()}
     exp.ds$cyt[[2]]
   })
-  
+
   # download ----------------------------------------------------------------
-  
-  
+
+
   observeEvent(
     input$adjust1,
     {
@@ -1939,7 +1952,7 @@ server <- function(input, output, session){
       validate(need(!is.null(exp.ds$modTraitCor) && !is.null(exp.ds$textMatrix) && !is.null(exp.ds$Left_anno),
                     "请先重新完成 module-trait analysis"))
       pdf(file = file,width = downloads$width6, height = downloads$height6)
-      
+
       print(Heatmap(
         matrix = exp.ds$modTraitCor,
         cluster_rows = F, cluster_columns = F,
@@ -1961,7 +1974,7 @@ server <- function(input, output, session){
         column_title_gp = gpar(fontsize = 15, fontface = "bold"),
         col = colorRamp2(c(-1, 0, 1), c(exp.ds$c_min, exp.ds$c_mid, exp.ds$c_max))
       ))
-      
+
       dev.off()
     }
   )
@@ -1982,7 +1995,7 @@ server <- function(input, output, session){
     }
   )
   output$downfig8 = downloadHandler(
-    
+
     filename = function() {
       paste0("08.",exp.ds$sml,"-",exp.ds$st,"MEandGeneHeatmap.pdf")
     },
@@ -1995,7 +2008,7 @@ server <- function(input, output, session){
     }
   )
   output$downfig10 = downloadHandler(
-    
+
     filename = function() {
       "09.GSvsMM.all.pdf"
     },
@@ -2014,7 +2027,7 @@ server <- function(input, output, session){
     }
   )
   output$downtbl2 = downloadHandler(
-    
+
     filename = function() {
       if(is.null(exp.ds$net)){return()}
       "01.Gene2Module.xls"
